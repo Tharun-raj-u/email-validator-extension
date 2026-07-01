@@ -5,6 +5,7 @@ import {
   extractEmailsFromText,
 } from "./csv.js";
 import { OCR_SPACE_API_KEY } from "./config.js";
+import Tesseract from "../vendor/tesseract/tesseract.esm.min.js";
 
 const ROW_NUMBER_TRIM_PX = 40;
 const OCR_VARIANT_MAX_DIMENSION = 2200;
@@ -120,6 +121,31 @@ async function callOcrSpaceApi(dataUrl) {
   return parsed.ParsedText || "";
 }
 
+function isRateLimitError(error) {
+  const text = String(error?.message || error || "");
+  return /rate limit exceeded|retryafter|free plan/i.test(text);
+}
+
+async function callLocalOcr(dataUrl, callbacks = {}) {
+  const { onStatus } = callbacks;
+  onStatus?.("Running local OCR fallback…");
+
+  const result = await Tesseract.recognize(dataUrl, "eng", {
+    logger: (message) => {
+      if (message?.status === "recognizing text") {
+        const progress = typeof message.progress === "number"
+          ? Math.round(message.progress * 100)
+          : null;
+        onStatus?.(
+          progress == null ? "Local OCR in progress…" : `Local OCR in progress… ${progress}%`
+        );
+      }
+    },
+  });
+
+  return result?.data?.text || "";
+}
+
 function clampCanvasSize(width, height, maxDimension = OCR_VARIANT_MAX_DIMENSION) {
   if (width <= maxDimension && height <= maxDimension) {
     return { width, height, scale: 1 };
@@ -213,10 +239,14 @@ async function runBestEffortOcr(dataUrl, callbacks = {}) {
 
   let bestResult = null;
   let firstError = null;
+  let needsLocalFallback = false;
 
   for (const outcome of settled) {
     if (outcome.status === "rejected") {
       if (!firstError) firstError = outcome.reason;
+      if (isRateLimitError(outcome.reason)) {
+        needsLocalFallback = true;
+      }
       continue;
     }
 
@@ -242,6 +272,36 @@ async function runBestEffortOcr(dataUrl, callbacks = {}) {
         candidate.rowCount > bestResult.rowCount)
     ) {
       bestResult = candidate;
+    }
+  }
+
+  if (needsLocalFallback) {
+    try {
+      for (const variant of variants) {
+        const text = await callLocalOcr(variant.dataUrl, { onStatus });
+        const rawEmails = extractEmailsFromText(text);
+        if (rawEmails.length === 0) continue;
+
+        const parsed = parseOcrTextToTable(text);
+        const parsedEmails = parsed ? getUniqueEmails(parsed) : [];
+
+        if (parsed && parsedEmails.length >= Math.max(2, Math.ceil(rawEmails.length * 0.4))) {
+          return {
+            ...parsed,
+            warning: `${parsed.warning || "OCR used a local fallback because the API rate-limited this request."}`,
+          };
+        }
+
+        return {
+          source: "google-sheets-ocr",
+          headers: ["email"],
+          rows: rawEmails.map((email) => [email]),
+          warning:
+            "OCR.space rate-limited this request, so the scan used local OCR fallback. Table structure may be less accurate.",
+        };
+      }
+    } catch (fallbackError) {
+      firstError = firstError || fallbackError;
     }
   }
 
