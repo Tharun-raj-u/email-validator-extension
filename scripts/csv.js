@@ -11,6 +11,81 @@ export function extractEmailsFromText(text) {
   return [...new Set(matches.map((e) => e.trim().toLowerCase()))];
 }
 
+export function splitDelimitedLine(line) {
+  const text = String(line ?? "");
+  if (!text) return [];
+
+  const delimiter = text.includes("\t") ? "\t" : text.includes("|") ? "|" : text.includes(",") ? "," : null;
+  if (!delimiter) return [text.trim()];
+
+  return text
+    .split(delimiter)
+    .map((part) => part.trim())
+}
+
+export function parseColumnConfig(configText) {
+  const text = String(configText ?? "").trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
+    }
+    if (parsed && typeof parsed === "object") {
+      return Object.values(parsed)
+        .flatMap((value) => (Array.isArray(value) ? value : [value]))
+        .map((item) => String(item).trim())
+        .filter(Boolean);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return text
+    .split(/[\n,|\t]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function normalizeColumnsFromRows(rows, preferredColumns = []) {
+  const normalized = rows.map((row) => row.map((cell) => String(cell ?? "").trim()));
+  if (!normalized.length) return normalized;
+
+  const preferred = parseColumnConfig(preferredColumns);
+  if (preferred.length === 0) return normalized;
+
+  const headers = normalized[0].map((h) => normalizeHeader(h));
+  const mapIndex = new Map();
+  for (let i = 0; i < headers.length; i++) {
+    if (!mapIndex.has(headers[i])) mapIndex.set(headers[i], i);
+  }
+
+  const aliasMap = new Map();
+  for (const name of preferred) {
+    const key = normalizeHeader(name);
+    if (!key) continue;
+    aliasMap.set(key, name);
+  }
+
+  const selectedIndexes = [];
+  const selectedHeaders = [];
+  for (const name of preferred) {
+    const key = normalizeHeader(name);
+    const idx = mapIndex.get(key);
+    if (idx == null) continue;
+    selectedIndexes.push(idx);
+    selectedHeaders.push(aliasMap.get(key) || name);
+  }
+
+  if (selectedIndexes.length === 0) return normalized;
+
+  return normalized.map((row, rowIndex) => {
+    if (rowIndex === 0) return selectedHeaders;
+    return selectedIndexes.map((idx) => row[idx] ?? "");
+  });
+}
+
 export function normalizeHeader(header) {
   return String(header || "")
     .trim()
@@ -205,7 +280,7 @@ export function extractEmailFromCell(value) {
 export function getUniqueEmails(extractedData) {
   const { headers, rows, source } = extractedData;
 
-  if (source === "plain-text" || source === "dom-scrape" || source === "pasted-input") {
+  if (source === "plain-text" || source === "dom-scrape") {
     return rows.map((r) => extractEmailFromCell(r[0])).filter(Boolean);
   }
 
@@ -238,7 +313,7 @@ export function limitEmailList(emails, maxCount) {
 export function buildMergedOutput(extractedData, validationMap) {
   const { headers, rows, source } = extractedData;
 
-  if (source === "plain-text" || source === "dom-scrape" || source === "pasted-input") {
+  if (source === "plain-text" || source === "dom-scrape") {
     const outHeaders =
       source === "dom-scrape" ? ["email", "valid", "context"] : ["email", "valid"];
     const outRows = rows.map((row) => {
@@ -254,6 +329,13 @@ export function buildMergedOutput(extractedData, validationMap) {
 
   const emailColIdx = findEmailColumnIndex(headers, rows);
   if (emailColIdx === -1) {
+    if (source === "pasted-input") {
+      const emails = rows.map((row) => extractEmailFromCell(row[0])).filter(Boolean);
+      return {
+        headers: ["email", "valid"],
+        rows: emails.map((email) => [email, validationMap.get(email) ?? ""]),
+      };
+    }
     throw new Error("No email column detected");
   }
 

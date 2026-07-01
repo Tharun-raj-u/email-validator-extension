@@ -9,10 +9,12 @@
 <body>
   <div class="app">
     <header class="header">
-      <div class="header-icon" aria-hidden="true">@</div>
-      <div>
+      <div class="brand-mark" aria-hidden="true">
+        <img class="brand-logo" src="../icons/logo.svg" alt="" />
+      </div>
+      <div class="brand-copy">
         <h1>Email Validator</h1>
-        <p class="subtitle">Scrape, validate &amp; export emails from any page</p>
+        <p class="subtitle">Paste, scan, validate, and export with a cleaner workflow.</p>
       </div>
     </header>
 
@@ -31,6 +33,13 @@
           </div>
         </div>
         <textarea id="pasteInput" class="paste-input" rows="5" placeholder="Paste anything here. Emails will be extracted automatically."></textarea>
+        <div class="paste-config-row">
+          <label class="field" for="columnConfig">
+            <span class="field-label">Column config</span>
+            <span class="field-hint">Example: name,email,status,phone</span>
+            <input id="columnConfig" class="column-config" type="text" placeholder="name,email,status,phone" />
+          </label>
+        </div>
       </div>
 
       <fieldset class="export-fieldset">

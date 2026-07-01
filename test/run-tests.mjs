@@ -8,6 +8,9 @@ import {
   getUniqueEmails,
   extractEmailsFromText,
   limitEmailList,
+  parseColumnConfig,
+  normalizeColumnsFromRows,
+  splitDelimitedLine,
 } from "../scripts/csv.js";
 
 function assert(condition, message) {
@@ -77,6 +80,24 @@ const pastedData = {
 };
 assert(getUniqueEmails(pastedData).length === 2, "Pasted input should return unique emails");
 assert(buildOutputCsv(pastedData, validationMap).includes("email,valid"), "Pasted input CSV headers");
+
+// runtime column config
+const config = parseColumnConfig("name,email,status,phone");
+assert(config.length === 4, "Column config should parse 4 columns");
+const tableRows = normalizeColumnsFromRows(
+  [
+    ["Name", "Status", "Email", "Phone"],
+    ["Anuja", "Active", "anuja@test.com", "123"],
+  ],
+  config
+);
+assert(tableRows[0].join(",") === "name,email,status,phone", "Columns should reorder to config");
+assert(tableRows[1][1] === "anuja@test.com", "Email should stay in mapped position");
+
+// splitDelimitedLine preserves empty CSV cells
+const splitRow = splitDelimitedLine("Visshnu,,Vyshag,vishnuvyshag@gmail.com,Sr. Talent Acquisition Specialist - Technical");
+assert(splitRow.length === 5, "Split row should preserve empty columns");
+assert(splitRow[3] === "vishnuvyshag@gmail.com", "Email should remain in the 4th column");
 
 // getUniqueEmails dedupes
 const unique = getUniqueEmails({ headers: headers1, rows: rows1, source: "html-table" });

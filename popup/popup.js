@@ -7,6 +7,9 @@ import {
   getUniqueEmails,
   getPreviewTable,
   limitEmailList,
+  parseColumnConfig,
+  splitDelimitedLine,
+  normalizeColumnsFromRows,
 } from "../scripts/csv.js";
 import { runOcrScan } from "../scripts/ocr-scan.js";
 
@@ -37,6 +40,7 @@ const copyTxtBtn = document.getElementById("copyTxtBtn");
 const copyCsvBtn = document.getElementById("copyCsvBtn");
 const copyJsonBtn = document.getElementById("copyJsonBtn");
 const pasteInput = document.getElementById("pasteInput");
+const columnConfigInput = document.getElementById("columnConfig");
 const usePasteBtn = document.getElementById("usePasteBtn");
 const clearPasteBtn = document.getElementById("clearPasteBtn");
 
@@ -45,6 +49,7 @@ let lastExportPayload = { txt: "", csv: "", json: "" };
 
 function getSettings() {
   return {
+    columnConfig: columnConfigInput.value.trim(),
     exportCsv: exportCsvCheckbox.checked,
     exportJson: exportJsonCheckbox.checked,
     deliveryDownload: deliveryDownloadCheckbox.checked,
@@ -57,6 +62,7 @@ async function loadSettings() {
     const stored = await chrome.storage.local.get(STORAGE_KEY);
     const s = stored[STORAGE_KEY];
     if (!s) return;
+    if (typeof s.columnConfig === "string") columnConfigInput.value = s.columnConfig;
     if (typeof s.exportCsv === "boolean") exportCsvCheckbox.checked = s.exportCsv;
     if (typeof s.exportJson === "boolean") exportJsonCheckbox.checked = s.exportJson;
     if (typeof s.deliveryDownload === "boolean") {
@@ -75,6 +81,7 @@ function saveSettings() {
 }
 
 for (const el of [
+  columnConfigInput,
   exportCsvCheckbox,
   exportJsonCheckbox,
   deliveryDownloadCheckbox,
@@ -125,19 +132,65 @@ function usePastedInput() {
     return;
   }
 
-  const emails = extractEmailsFromText(raw);
+  const columnConfig = parseColumnConfig(columnConfigInput.value);
+  let parsedRows = null;
+
+  try {
+    const json = JSON.parse(raw);
+    if (Array.isArray(json) && json.length > 0) {
+      if (typeof json[0] === "object" && !Array.isArray(json[0])) {
+        const headers = columnConfig.length > 0
+          ? columnConfig
+          : Array.from(new Set(json.flatMap((item) => Object.keys(item || {}))));
+        parsedRows = [headers, ...json.map((item) => headers.map((header) => String(item?.[header] ?? item?.[header.toLowerCase()] ?? "")) )];
+      } else if (Array.isArray(json[0])) {
+        parsedRows = json.map((row) => row.map((cell) => String(cell ?? "")));
+      }
+    }
+  } catch {
+    /* not JSON */
+  }
+
+  if (!parsedRows) {
+    const lines = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      showStatus("Paste text first.", "error");
+      return;
+    }
+
+    const rows = lines.map((line) => splitDelimitedLine(line));
+    parsedRows = normalizeColumnsFromRows(rows, columnConfig.length > 0 ? columnConfig : []);
+  }
+
+  const headers = parsedRows[0] || [];
+  const dataRows = parsedRows.slice(1).filter((row) => row.some((cell) => String(cell || "").trim()));
+
+  if (dataRows.length === 0) {
+    showStatus("No usable rows found in pasted input.", "error");
+    return;
+  }
+
+  const extractedData = {
+    source: "pasted-input",
+    sourceLabel: "Pasted Input",
+    headers,
+    rows: dataRows,
+  };
+
+  const emails = getUniqueEmails(extractedData);
   if (emails.length === 0) {
     showStatus("No emails found in pasted input.", "error");
     return;
   }
 
   scannedData = {
-    source: "pasted-input",
-    sourceLabel: "Pasted Input",
-    headers: ["email"],
-    rows: emails.map((email) => [email]),
+    ...extractedData,
     emailCount: emails.length,
-    rowCount: emails.length,
+    rowCount: dataRows.length,
     warning: null,
   };
 
