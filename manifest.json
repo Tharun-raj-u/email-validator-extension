@@ -1,0 +1,81 @@
+{
+
+  "manifest_version": 3,
+
+  "name": "Email Validator",
+
+  "version": "1.2.0",
+
+  "description": "Scrape emails from any page, validate in batches, and export CSV or JSON.",
+
+  "permissions": ["activeTab", "scripting", "storage"],
+
+  "host_permissions": [
+
+    "https://validator-api.fsgarage.in/*",
+
+    "https://docs.google.com/*",
+
+    "https://api.ocr.space/*"
+
+  ],
+
+  "action": {
+
+    "default_popup": "popup/popup.html",
+
+    "default_icon": {
+
+      "16": "icons/icon16.png",
+
+      "48": "icons/icon48.png",
+
+      "128": "icons/icon128.png"
+
+    }
+
+  },
+
+  "background": {
+
+    "service_worker": "scripts/background.js",
+
+    "type": "module"
+
+  },
+
+  "icons": {
+
+    "16": "icons/icon16.png",
+
+    "48": "icons/icon48.png",
+
+    "128": "icons/icon128.png"
+
+  },
+
+  "web_accessible_resources": [
+
+    {
+
+      "resources": [
+
+        "vendor/tesseract/worker.min.js",
+
+        "vendor/tesseract/tesseract-core-simd-lstm.wasm.js",
+
+        "vendor/tesseract/tesseract-core-simd-lstm.wasm",
+
+        "vendor/tesseract/lang/*"
+
+      ],
+
+      "matches": ["<all_urls>"]
+
+    }
+
+  ]
+
+}
+
+

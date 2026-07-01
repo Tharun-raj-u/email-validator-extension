@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Validator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="header-icon" aria-hidden="true">@</div>
+      <div>
+        <h1>Email Validator</h1>
+        <p class="subtitle">Scrape, validate &amp; export emails from any page</p>
+      </div>
+    </header>
+
+    <section class="card settings-card">
+      <h2 class="card-title">Options</h2>
+
+      <div class="paste-card">
+        <div class="paste-header">
+          <div>
+            <span class="field-label">Paste input</span>
+            <span class="field-hint">Paste raw text, CSV, JSON, or copied sheet content</span>
+          </div>
+          <div class="paste-actions-inline">
+            <button id="usePasteBtn" class="btn btn-secondary paste-action-btn" type="button">Use Pasted Input</button>
+            <button id="clearPasteBtn" class="btn btn-secondary paste-action-btn" type="button">Clear</button>
+          </div>
+        </div>
+        <textarea id="pasteInput" class="paste-input" rows="5" placeholder="Paste anything here. Emails will be extracted automatically."></textarea>
+      </div>
+
+      <fieldset class="export-fieldset">
+        <legend>Export format</legend>
+        <label class="chip">
+          <input type="checkbox" id="exportCsv" checked />
+          <span>CSV</span>
+        </label>
+        <label class="chip">
+          <input type="checkbox" id="exportJson" />
+          <span>JSON</span>
+        </label>
+      </fieldset>
+
+      <fieldset class="export-fieldset delivery-fieldset">
+        <legend>Delivery</legend>
+        <label class="chip">
+          <input type="checkbox" id="deliveryDownload" checked />
+          <span>Download</span>
+        </label>
+        <label class="chip">
+          <input type="checkbox" id="deliveryCopy" />
+          <span>Copy</span>
+        </label>
+      </fieldset>
+    </section>
+
+    <button id="scanBtn" class="btn btn-primary">
+      <span class="btn-icon" aria-hidden="true">&#128269;</span>
+      Scan Current Page (Auto Scroll)
+    </button>
+
+    <section id="scanInfo" class="card results-card hidden">
+      <h2 class="card-title">Scan results</h2>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-value" id="sourceLabel">—</span>
+          <span class="stat-label">Source</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="rowCount">—</span>
+          <span class="stat-label">Rows</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="emailCount">—</span>
+          <span class="stat-label">Emails</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="validateCount">—</span>
+          <span class="stat-label">To validate</span>
+        </div>
+      </div>
+      <p id="warningMsg" class="warning hidden"></p>
+    </section>
+
+    <button id="validateBtn" class="btn btn-accent hidden" disabled>
+      <span class="btn-icon" aria-hidden="true">&#10003;</span>
+      Validate &amp; Export
+    </button>
+
+    <section id="progressPanel" class="card progress-card hidden">
+      <div class="progress-header">
+        <span id="progressText">0 / 0 validated</span>
+        <span id="batchText" class="batch-text"></span>
+      </div>
+      <div class="progress-bar">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+    </section>
+
+    <section id="previewPanel" class="card preview-card hidden">
+      <h2 class="card-title">Preview</h2>
+      <div id="previewTable" class="preview-table"></div>
+    </section>
+
+    <section id="copyPanel" class="card hidden">
+      <div class="copy-header">
+        <div>
+          <h2 class="card-title">Copy output</h2>
+          <p class="copy-note">Pick the format you want to paste into another app.</p>
+        </div>
+        <span id="copySummary" class="copy-summary">No output yet</span>
+      </div>
+      <div class="copy-actions">
+        <button id="copyTxtBtn" class="btn btn-secondary copy-btn" type="button" disabled>
+          <span class="btn-icon" aria-hidden="true">&#128196;</span>
+          Copy TXT
+        </button>
+        <button id="copyCsvBtn" class="btn btn-secondary copy-btn" type="button" disabled>
+          <span class="btn-icon" aria-hidden="true">&#128462;</span>
+          Copy CSV
+        </button>
+        <button id="copyJsonBtn" class="btn btn-secondary copy-btn" type="button" disabled>
+          <span class="btn-icon" aria-hidden="true">&#123;</span>
+          Copy JSON
+        </button>
+      </div>
+    </section>
+
+    <p id="statusMsg" class="status hidden"></p>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
