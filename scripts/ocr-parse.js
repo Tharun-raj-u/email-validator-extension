@@ -23,12 +23,47 @@ function cellText(value) {
   return String(value ?? "").trim();
 }
 
+/**
+ * Fix OCR-mangled emails where a space was inserted before the TLD.
+ * e.g. "user@domain. com" → "user@domain.com"
+ */
+function fixOcrEmailSpaces(line) {
+  return line
+    .replace(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+)\.\s+([a-zA-Z]{2,})/g, "$1.$2")
+    .replace(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+)\s+\.([a-zA-Z]{2,})/g, "$1.$2");
+}
+
+/**
+ * Detect spreadsheet column-letter header rows from OCR, e.g. "A 8 c D E F s H '"
+ * All tokens are 1-2 chars (letters, digits, or quotes).
+ */
+function isColumnLetterLine(line) {
+  const tokens = line.trim().split(/\s+/);
+  if (tokens.length < 4) return false;
+  return tokens.every((t) => /^[A-Za-z0-9'"]{1,2}$/.test(t));
+}
+
 function isNoiseLine(line) {
   const t = cellText(line);
   if (!t) return true;
   if (/^\d+$/.test(t)) return true;
   if (/^[A-Z]{1,3}$/.test(t)) return true;
+  // Lines that are only dashes, underscores, equals or similar OCR noise
+  if (/^[\s\-_=~|]+$/.test(t)) return true;
+  // Spreadsheet column letter rows: "A 8 c D E F s H '"
+  if (isColumnLetterLine(t)) return true;
   return false;
+}
+
+/** Remove URLs, leading underscores/dashes/equals, and collapse whitespace. */
+function cleanNameText(text) {
+  return text
+    .replace(/https?:\/\/[^\s]*/gi, "")   // strip URLs
+    .replace(/\s*https?[^\s]*/gi, "")       // strip partial https artifacts
+    .replace(/^[\s_=\-–—\/\\|.]+/, "")     // strip leading noise chars
+    .replace(/[\s_=\-–—\/\\|.]+$/, "")     // strip trailing noise chars
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isHeaderRow(row) {
@@ -144,48 +179,59 @@ function mergeContinuationRows(rows) {
   return mergedRows;
 }
 
+/**
+ * Extract the name portion from a line — the text before any URL or email.
+ */
+function extractNameFromLine(line) {
+  // Take everything before the first http or email-like token
+  const cutAt = line.search(/https?:|[a-zA-Z0-9._%+\-]+@/);
+  const candidate = cutAt > 0 ? line.slice(0, cutAt) : line;
+  return cleanNameText(candidate);
+}
+
 function parseEmailAnchoredRows(lines) {
   const rows = [];
+  // Track last seen name-only line so orphaned email lines can be joined.
+  let pendingName = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    // Fix OCR email spaces then strip leading noise chars glued to email.
+    const line = fixOcrEmailSpaces(lines[i]).replace(/(?<!\w)[_\-=]\s*/g, "").trim();
+
     const emails = extractEmailsFromText(line);
-    if (emails.length === 0) continue;
+
+    if (emails.length === 0) {
+      // No email — might be a name+URL line; save name for next orphaned email.
+      const name = extractNameFromLine(line);
+      if (name) pendingName = name;
+      continue;
+    }
 
     const email = emails[0];
     const idx = line.toLowerCase().indexOf(email.toLowerCase());
-    const left = idx >= 0 ? line.slice(0, idx).trim() : "";
-    const right = idx >= 0 ? line.slice(idx + email.length).trim() : "";
+    const left = idx >= 0 ? line.slice(0, idx) : "";
+    const right = idx >= 0 ? line.slice(idx + email.length) : "";
 
-    // Backfill name pieces from up to 3 preceding lines that don't contain emails.
-    const nameParts = [];
-    for (let p = Math.max(0, i - 3); p < i; p++) {
-      const prev = lines[p];
-      if (!prev || extractEmailsFromText(prev).length > 0) continue;
-      const n = normalizeHeader(prev);
-      if (!n || n.includes("email") || n.includes("phone") || n.includes("name")) continue;
-      if (prev.length <= 40) nameParts.push(prev.trim());
-    }
+    // Name: prefer inline name (before email), fall back to pending name from previous line.
+    const nameDirect = cleanNameText(left);
+    const name = nameDirect || pendingName || "";
+    pendingName = null;
 
-    const name = [left, ...nameParts].join(" ").replace(/\s+/g, " ").trim();
-    const role = right;
+    // Job title / extra: clean right side
+    const role = cleanNameText(right);
     rows.push([name, email, role]);
   }
 
   if (!rows.length) return null;
 
-  // De-duplicate by email while keeping the richest row.
+  // De-duplicate by email keeping the row with the most content.
   const byEmail = new Map();
   for (const row of rows) {
-    const email = row[1].toLowerCase();
-    const existing = byEmail.get(email);
-    if (!existing) {
-      byEmail.set(email, row);
-      continue;
+    const key = row[1].toLowerCase();
+    const existing = byEmail.get(key);
+    if (!existing || row.join(" ").length > existing.join(" ").length) {
+      byEmail.set(key, row);
     }
-    const existingScore = existing.join(" ").length;
-    const rowScore = row.join(" ").length;
-    if (rowScore > existingScore) byEmail.set(email, row);
   }
 
   return {
@@ -205,8 +251,8 @@ export function parseLineToCells(line) {
   if (emails.length === 1) {
     const email = emails[0];
     const idx = line.toLowerCase().indexOf(email.toLowerCase());
-    const before = idx > 0 ? line.slice(0, idx).trim() : "";
-    const after = idx >= 0 ? line.slice(idx + email.length).trim() : "";
+    const before = idx > 0 ? cleanNameText(line.slice(0, idx)) : "";
+    const after = idx >= 0 ? cleanNameText(line.slice(idx + email.length)) : "";
     const cells = [];
     if (before) cells.push(before.replace(/^\d+\s*/, "").trim());
     cells.push(line.slice(idx, idx + email.length) || email);
@@ -242,7 +288,8 @@ export function parseLineToCells(line) {
 export function parseOcrTextToTable(ocrText) {
   if (!ocrText || !ocrText.includes("@")) return null;
 
-  const lines = ocrText
+  // Pre-process: fix OCR email spaces before line-level filtering.
+  const lines = fixOcrEmailSpaces(ocrText)
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !isNoiseLine(l));

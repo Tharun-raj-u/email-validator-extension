@@ -174,12 +174,6 @@ function findEmailColumnByContent(allRows) {
 }
 
 export function findEmailColumnIndex(headers, rows) {
-  const emailHeaderIdx = headers.findIndex((h) => isEmailHeader(h));
-  if (emailHeaderIdx !== -1) return emailHeaderIdx;
-
-  const layoutIdx = findEmailColumnByLayout(headers);
-  if (layoutIdx !== -1) return layoutIdx;
-
   let bestIdx = -1;
   let bestScore = 0;
 
@@ -193,6 +187,29 @@ export function findEmailColumnIndex(headers, rows) {
     if (score > bestScore) {
       bestScore = score;
       bestIdx = col;
+    }
+  }
+
+  const emailHeaderIdx = headers.findIndex((h) => isEmailHeader(h));
+  if (emailHeaderIdx !== -1) {
+    const values = rows.map((row) => (row[emailHeaderIdx] || "").trim()).filter(Boolean);
+    const emailHits = values.filter((v) => cellHasEmail(v)).length;
+    const headerScore = values.length > 0 ? emailHits / values.length : 0;
+
+    // Prefer a labeled email column only if it actually contains emails,
+    // or if it performs close to the best detected column.
+    if (headerScore >= 0.2 || (bestIdx === -1 || headerScore >= bestScore * 0.8)) {
+      return emailHeaderIdx;
+    }
+  }
+
+  const layoutIdx = findEmailColumnByLayout(headers);
+  if (layoutIdx !== -1) {
+    const values = rows.map((row) => (row[layoutIdx] || "").trim()).filter(Boolean);
+    const emailHits = values.filter((v) => cellHasEmail(v)).length;
+    const layoutScore = values.length > 0 ? emailHits / values.length : 0;
+    if (layoutScore >= bestScore * 0.8 || bestIdx === -1) {
+      return layoutIdx;
     }
   }
 

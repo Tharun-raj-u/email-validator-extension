@@ -16,7 +16,9 @@
 
     "https://docs.google.com/*",
 
-    "https://api.ocr.space/*"
+    "https://api.ocr.space/*",
+
+    "https://hackathon-ocr-worker-1.dygkh7.easypanel.host/*"
 
   ],
 

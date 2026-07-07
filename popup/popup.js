@@ -43,9 +43,47 @@ const pasteInput = document.getElementById("pasteInput");
 const columnConfigInput = document.getElementById("columnConfig");
 const usePasteBtn = document.getElementById("usePasteBtn");
 const clearPasteBtn = document.getElementById("clearPasteBtn");
+const resultFilter = document.getElementById("resultFilter");
+const ocrSaveImagesCheckbox = document.getElementById("ocrSaveImages");
 
 let scannedData = null;
 let lastExportPayload = { txt: "", csv: "", json: "" };
+let lastMergedOutput = null;
+
+function scrollToSection(element) {
+  if (!element) return;
+  element.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function getPreviewRowsByFilter(headers, rows, filterValue) {
+  if (!Array.isArray(headers) || !Array.isArray(rows)) return rows || [];
+  const validColIdx = headers.findIndex((h) => String(h || "").trim().toLowerCase() === "valid");
+  if (validColIdx === -1 || !filterValue || filterValue === "all") return rows;
+
+  if (filterValue === "valid") {
+    return rows.filter((row) => String(row?.[validColIdx] || "").trim().toLowerCase() === "valid");
+  }
+  if (filterValue === "invalid") {
+    return rows.filter((row) => String(row?.[validColIdx] || "").trim().toLowerCase() === "invalid");
+  }
+  return rows;
+}
+
+function renderMergedPreview() {
+  if (!lastMergedOutput) return;
+  const filterValue = resultFilter?.value || "all";
+  const filteredRows = getPreviewRowsByFilter(
+    lastMergedOutput.headers,
+    lastMergedOutput.rows,
+    filterValue
+  );
+  const preview = getPreviewTable(
+    lastMergedOutput.headers,
+    filteredRows,
+    Math.max(filteredRows.length, 1)
+  );
+  renderPreview(preview.headers, preview.rows);
+}
 
 function getSettings() {
   return {
@@ -54,6 +92,7 @@ function getSettings() {
     exportJson: exportJsonCheckbox.checked,
     deliveryDownload: deliveryDownloadCheckbox.checked,
     deliveryCopy: deliveryCopyCheckbox.checked,
+    ocrSaveImages: ocrSaveImagesCheckbox?.checked ?? false,
   };
 }
 
@@ -71,6 +110,9 @@ async function loadSettings() {
     if (typeof s.deliveryCopy === "boolean") {
       deliveryCopyCheckbox.checked = s.deliveryCopy;
     }
+    if (typeof s.ocrSaveImages === "boolean" && ocrSaveImagesCheckbox) {
+      ocrSaveImagesCheckbox.checked = s.ocrSaveImages;
+    }
   } catch {
     /* ignore */
   }
@@ -86,7 +128,9 @@ for (const el of [
   exportJsonCheckbox,
   deliveryDownloadCheckbox,
   deliveryCopyCheckbox,
+  ocrSaveImagesCheckbox,
 ]) {
+  if (!el) continue;
   el.addEventListener("change", () => {
     saveSettings();
     updateValidateCount();
@@ -117,6 +161,7 @@ function setCopyState(payload = { txt: "", csv: "", json: "" }) {
 
 function clearPageResults() {
   scannedData = null;
+  lastMergedOutput = null;
   scanInfo.classList.add("hidden");
   validateBtn.classList.add("hidden");
   previewPanel.classList.add("hidden");
@@ -163,7 +208,21 @@ function usePastedInput() {
     }
 
     const rows = lines.map((line) => splitDelimitedLine(line));
-    parsedRows = normalizeColumnsFromRows(rows, columnConfig.length > 0 ? columnConfig : []);
+
+    if (lines.length === 1) {
+      const inlineEmails = extractEmailsFromText(lines[0]);
+      if (inlineEmails.length > 0) {
+        parsedRows = [["email"], ...inlineEmails.map((email) => [email])];
+      }
+    }
+
+    if (!parsedRows) {
+      const configuredCols = columnConfig.length > 0 ? columnConfig : [];
+      const looksLikeHeader = rows.length > 1 && rows[0].some((cell) => /[a-zA-Z]/.test(String(cell || "")));
+      parsedRows = looksLikeHeader
+        ? normalizeColumnsFromRows(rows, configuredCols)
+        : [["email"], ...rows];
+    }
   }
 
   const headers = parsedRows[0] || [];
@@ -203,6 +262,7 @@ function usePastedInput() {
   validateBtn.classList.remove("hidden");
   validateBtn.disabled = false;
   showStatus(`Loaded ${emails.length} email(s) from pasted input.`, "success");
+  scrollToSection(scanInfo);
 }
 
 async function copyText(text) {
@@ -362,6 +422,8 @@ function applyScanResult(scanResult) {
   } else {
     warningMsg.classList.add("hidden");
   }
+
+  scrollToSection(scanInfo);
 }
 
 scanBtn.addEventListener("click", async () => {
@@ -369,7 +431,7 @@ scanBtn.addEventListener("click", async () => {
   clearPageResults();
   validateBtn.disabled = true;
   scanBtn.disabled = true;
-  scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#8987;</span> Scanning & scrolling...';
+  scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#8987;</span> Scanning...';
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -395,7 +457,9 @@ scanBtn.addEventListener("click", async () => {
       scanBtn.innerHTML =
         '<span class="btn-icon" aria-hidden="true">&#8987;</span> Capturing sheet…';
       try {
+        const settings = getSettings();
         scanResult = await runOcrScan(tab.id, {
+          saveImages: settings.ocrSaveImages,
           onStatus: (message) => {
             scanBtn.innerHTML = `<span class="btn-icon" aria-hidden="true">&#8987;</span> ${message}`;
             showStatus(message, "info");
@@ -429,7 +493,7 @@ scanBtn.addEventListener("click", async () => {
     showStatus(`Scan failed: ${err.message}`, "error");
   } finally {
     scanBtn.disabled = false;
-    scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#128269;</span> Scan Current Page (Auto Scroll)';
+    scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#128269;</span> Scan Current Page';
   }
 });
 
@@ -483,9 +547,13 @@ validateBtn.addEventListener("click", async () => {
 
     const validationMap = new Map(Object.entries(response.results));
     const merged = buildMergedOutput(extractedData, validationMap);
-    const preview = getPreviewTable(merged.headers, merged.rows, 5);
-    renderPreview(preview.headers, preview.rows);
+    lastMergedOutput = merged;
+    if (resultFilter) {
+      resultFilter.value = "all";
+    }
+    renderMergedPreview();
     previewPanel.classList.remove("hidden");
+    scrollToSection(previewPanel);
 
     const slug = timestampSlug();
     const exported = [];
@@ -551,6 +619,10 @@ clearPasteBtn.addEventListener("click", () => {
   hideStatus();
   clearPageResults();
   showStatus("Pasted input cleared.", "info");
+});
+
+resultFilter?.addEventListener("change", () => {
+  renderMergedPreview();
 });
 
 copyCsvBtn.addEventListener("click", async () => {

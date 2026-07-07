@@ -716,11 +716,28 @@
 
   function extractPageData() {
     const extractors = [extractGoogleSheets, extractHtmlTables, extractDomScrape, extractPlainText];
+    let fallback = null;
+
     for (const extract of extractors) {
       const result = extract();
-      if (result && result.rows.length > 0) return result;
+      if (!result || result.rows.length === 0) continue;
+
+      if (result.source === "plain-text" || result.source === "dom-scrape") {
+        const emails = result.rows.map((row) => extractEmailFromCell(row[0])).filter(Boolean);
+        if (emails.length > 0) return result;
+        fallback ??= result;
+        continue;
+      }
+
+      const emailColIdx = findEmailColumnIndex(result.headers, result.rows);
+      if (emailColIdx !== -1 && countEmailsInData(result.headers, result.rows) > 0) {
+        return result;
+      }
+
+      fallback ??= result;
     }
-    return null;
+
+    return fallback;
   }
 
   const data = extractPageData();

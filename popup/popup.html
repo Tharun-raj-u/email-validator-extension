@@ -10,7 +10,7 @@
   <div class="app">
     <header class="header">
       <div class="brand-mark" aria-hidden="true">
-        <img class="brand-logo" src="../icons/logo.svg" alt="" />
+        <img class="brand-logo" src="https://fleetstudio.s3.amazonaws.com/attachments/clsn2995t00jhz9qh2q11cxp0-favicon-fleet.png" alt="" />
       </div>
       <div class="brand-copy">
         <h1>Email Validator</h1>
@@ -65,11 +65,19 @@
           <span>Copy</span>
         </label>
       </fieldset>
+
+      <fieldset class="export-fieldset delivery-fieldset">
+        <legend>OCR scan</legend>
+        <label class="chip">
+          <input type="checkbox" id="ocrSaveImages" />
+          <span>Save Images</span>
+        </label>
+      </fieldset>
     </section>
 
     <button id="scanBtn" class="btn btn-primary">
       <span class="btn-icon" aria-hidden="true">&#128269;</span>
-      Scan Current Page (Auto Scroll)
+      Scan Current Page
     </button>
 
     <section id="scanInfo" class="card results-card hidden">
@@ -111,7 +119,17 @@
     </section>
 
     <section id="previewPanel" class="card preview-card hidden">
-      <h2 class="card-title">Preview</h2>
+      <div class="preview-header">
+        <h2 class="card-title">Preview</h2>
+        <label class="preview-filter" for="resultFilter">
+          <span>Show</span>
+          <select id="resultFilter">
+            <option value="all">All</option>
+            <option value="valid">Valid</option>
+            <option value="invalid">Invalid</option>
+          </select>
+        </label>
+      </div>
       <div id="previewTable" class="preview-table"></div>
     </section>
 

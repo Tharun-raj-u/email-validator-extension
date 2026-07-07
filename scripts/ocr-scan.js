@@ -4,7 +4,7 @@ import {
   findEmailColumnIndex,
   extractEmailsFromText,
 } from "./csv.js";
-import { OCR_SPACE_API_KEY } from "./config.js";
+import { OCR_SPACE_API_KEY, OCR_API_URL } from "./config.js";
 import Tesseract from "../vendor/tesseract/tesseract.esm.min.js";
 
 const ROW_NUMBER_TRIM_PX = 40;
@@ -86,6 +86,23 @@ async function getScanPlan(tabId) {
       visibleRows: null,
     }
   );
+}
+
+async function callProductionOcrApi(dataUrl) {
+  // Route through background service worker to avoid CORS restrictions.
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "OCR_REQUEST", dataUrl }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.success) {
+        reject(new Error(response?.error || "OCR request failed."));
+        return;
+      }
+      resolve(response.text || "");
+    });
+  });
 }
 
 async function callOcrSpaceApi(dataUrl) {
@@ -198,28 +215,13 @@ function applyHighContrast(ctx, width, height) {
 
 async function buildOcrImageVariants(dataUrl) {
   const image = await loadImage(dataUrl);
-  const variants = [];
-
   const base = drawBaseImage(image, OCR_VARIANT_MAX_DIMENSION);
-  variants.push({
-    label: "base",
-    dataUrl: convertCanvasToDataUrl(base.canvas),
-  });
-
-  const contrast = drawBaseImage(image, OCR_VARIANT_MAX_DIMENSION);
-  applyHighContrast(contrast.ctx, contrast.canvas.width, contrast.canvas.height);
-  variants.push({
-    label: "contrast",
-    dataUrl: convertCanvasToDataUrl(contrast.canvas),
-  });
-
-  const enlarged = drawBaseImage(image, Math.max(OCR_VARIANT_MAX_DIMENSION, 3000));
-  variants.push({
-    label: "enlarged",
-    dataUrl: convertCanvasToDataUrl(enlarged.canvas),
-  });
-
-  return variants;
+  return [
+    {
+      label: "base",
+      dataUrl: convertCanvasToDataUrl(base.canvas),
+    },
+  ];
 }
 
 async function runBestEffortOcr(dataUrl, callbacks = {}) {
@@ -227,12 +229,15 @@ async function runBestEffortOcr(dataUrl, callbacks = {}) {
 
   // Build variants fresh for this invocation — no module-level state.
   const variants = await buildOcrImageVariants(dataUrl);
-  onStatus?.(`Running OCR (${variants.length} variants)…`);
+  onStatus?.("Running OCR…");
 
-  // Fire all OCR API calls in parallel so no prior variant's result leaks into
-  // the next call's closure. Each call is fully independent.
+  // Use production OCR worker when no OCR.space key is configured (production).
+  // Fall back to OCR.space when a key is present (local dev).
+  const useOcrSpace = Boolean(OCR_SPACE_API_KEY);
   const settled = await Promise.allSettled(
-    variants.map((v) => callOcrSpaceApi(v.dataUrl))
+    variants.map((v) =>
+      useOcrSpace ? callOcrSpaceApi(v.dataUrl) : callProductionOcrApi(v.dataUrl)
+    )
   );
 
   onProgress?.(1);
@@ -380,6 +385,27 @@ async function scrollSheetDown(tabId) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId, allFrames: false },
     func: () => {
+      function getVisibleSignature(grid) {
+        const rowIndexes = [];
+
+        for (const row of grid.querySelectorAll('[role="row"][aria-rowindex]')) {
+          const idx = parseInt(row.getAttribute("aria-rowindex"), 10);
+          if (!Number.isNaN(idx) && idx > 0) rowIndexes.push(idx);
+        }
+
+        if (rowIndexes.length === 0) {
+          for (const cell of grid.querySelectorAll('[role="gridcell"][aria-rowindex]')) {
+            const idx = parseInt(cell.getAttribute("aria-rowindex"), 10);
+            if (!Number.isNaN(idx) && idx > 0) rowIndexes.push(idx);
+          }
+        }
+
+        if (rowIndexes.length === 0) return "rows:none";
+        const min = Math.min(...rowIndexes);
+        const max = Math.max(...rowIndexes);
+        return `rows:${min}-${max}:${rowIndexes.length}`;
+      }
+
       function uniqueElements(items) {
         const seen = new Set();
         const out = [];
@@ -415,6 +441,8 @@ async function scrollSheetDown(tabId) {
         return { moved: false, reason: "No sheet grid found." };
       }
 
+      const beforeSignature = getVisibleSignature(grid);
+
       const rect = grid.getBoundingClientRect();
       const cx = Math.floor(rect.left + rect.width / 2);
       const cy = Math.floor(rect.top + rect.height / 2);
@@ -438,6 +466,9 @@ async function scrollSheetDown(tabId) {
 
         if (target instanceof HTMLElement) {
           target.focus?.({ preventScroll: true });
+          target.dispatchEvent(
+            new WheelEvent("wheel", { deltaY: step, bubbles: true, cancelable: true })
+          );
         }
 
         target.scrollTop = before + step;
@@ -461,19 +492,24 @@ async function scrollSheetDown(tabId) {
         }
       }
 
-      // Final fallback for virtualized panes where scrollTop is not exposed.
+      // Fallback for virtualized panes where scrollTop may not expose movement.
       if (!moved && grid instanceof HTMLElement) {
+        grid.focus?.({ preventScroll: true });
         grid.dispatchEvent(
           new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true })
         );
         grid.dispatchEvent(
           new KeyboardEvent("keydown", { key: "PageDown", code: "PageDown", bubbles: true })
         );
-        moved = true;
-        usedTarget = "keyboard-fallback";
+        window.scrollBy(0, Math.max(120, Math.floor(window.innerHeight * 0.75)));
+        usedTarget = usedTarget || "keyboard-fallback";
       }
 
-      return { moved, usedTarget };
+      const afterSignature = getVisibleSignature(grid);
+      const viewportChanged = beforeSignature !== afterSignature;
+      moved = moved || viewportChanged;
+
+      return { moved, usedTarget, beforeSignature, afterSignature };
     },
   });
 
@@ -536,14 +572,15 @@ async function cropScreenshot(dataUrl, bounds) {
 }
 
 export async function runOcrScan(tabId, callbacks = {}) {
-  const { onStatus, onProgress, scrollSteps } = callbacks;
+  const { onStatus, onProgress, scrollSteps, autoScroll = true, saveImages = false } = callbacks;
   const tab = await chrome.tabs.get(tabId);
   const plan = await getScanPlan(tabId);
   const explicitSteps = parseInt(scrollSteps, 10);
-  const maxSteps =
+  const plannedSteps =
     Number.isFinite(explicitSteps) && explicitSteps > 0
       ? explicitSteps
       : plan.suggestedSteps || DEFAULT_SCROLL_STEPS;
+  const maxSteps = autoScroll ? Math.max(1, plannedSteps) : 1;
 
   onStatus?.(
     plan.totalRows
@@ -553,6 +590,7 @@ export async function runOcrScan(tabId, callbacks = {}) {
 
   const segments = [];
   const seenEmails = new Set();
+  const seenViewSignatures = new Set();
   let stagnantSegments = 0;
   const stagnantLimit = Math.max(MAX_STAGNANT_SEGMENTS, Math.min(10, Math.ceil(maxSteps * 0.15)));
 
@@ -560,11 +598,52 @@ export async function runOcrScan(tabId, callbacks = {}) {
     onStatus?.(`Capture ${step + 1}/${maxSteps}: getting bounds…`);
     const bounds = await getGridBounds(tabId);
 
+    const [signatureProbe] = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      func: () => {
+        const grid =
+          document.querySelector("#grid-container [role='grid']") ||
+          document.querySelector("#waffle-grid-container [role='grid']") ||
+          document.querySelector("[role='grid']") ||
+          document.querySelector("#grid-container") ||
+          document.querySelector("#waffle-grid-container");
+        if (!grid) return "rows:none";
+
+        const indexes = [];
+        for (const row of grid.querySelectorAll('[role="row"][aria-rowindex]')) {
+          const idx = parseInt(row.getAttribute("aria-rowindex"), 10);
+          if (!Number.isNaN(idx) && idx > 0) indexes.push(idx);
+        }
+        if (indexes.length === 0) {
+          for (const cell of grid.querySelectorAll('[role="gridcell"][aria-rowindex]')) {
+            const idx = parseInt(cell.getAttribute("aria-rowindex"), 10);
+            if (!Number.isNaN(idx) && idx > 0) indexes.push(idx);
+          }
+        }
+        if (indexes.length === 0) return "rows:none";
+        return `rows:${Math.min(...indexes)}-${Math.max(...indexes)}:${indexes.length}`;
+      },
+    });
+
+    const currentSignature = signatureProbe?.result || "rows:none";
+    if (seenViewSignatures.has(currentSignature)) {
+      onStatus?.(`Capture ${step + 1}/${maxSteps}: same viewport detected, stopping duplicate captures.`);
+      break;
+    }
+    seenViewSignatures.add(currentSignature);
+
     onStatus?.(`Capture ${step + 1}/${maxSteps}: screenshot…`);
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
 
     onStatus?.(`Capture ${step + 1}/${maxSteps}: preparing image…`);
     const croppedDataUrl = await cropScreenshot(dataUrl, bounds);
+
+    if (saveImages) {
+      const a = document.createElement("a");
+      a.href = croppedDataUrl;
+      a.download = `ocr-capture-${Date.now()}-${step + 1}.png`;
+      a.click();
+    }
 
     try {
       const parsed = await runBestEffortOcr(croppedDataUrl, {
@@ -598,7 +677,7 @@ export async function runOcrScan(tabId, callbacks = {}) {
 
     onProgress?.((step + 1) / maxSteps);
 
-    if (step < maxSteps - 1) {
+    if (autoScroll && step < maxSteps - 1) {
       if (stagnantSegments >= stagnantLimit) {
         onStatus?.(
           `Capture ${step + 1}/${maxSteps}: stopping after ${stagnantSegments} segments with no new emails.`
