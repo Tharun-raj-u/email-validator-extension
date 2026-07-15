@@ -1,15 +1,20 @@
-import localConfig from "./config.local.js";
-
 const defaults = {
   VALIDATOR_API_URL: "https://validator-api.fsgarage.in/api/v1/validate/email",
-  OCR_API_URL: "https://hackathon-ocr-worker-2.dygkh7.easypanel.host/ocr",
+  OCR_API_URL: "https://hackathon-ocr-worker-3.dygkh7.easypanel.host/ocr",
   VALIDATION_BATCH_SIZE: 100,
   VALIDATION_EMAILS_PER_SEC: 100,
 };
 
+let localConfig = {};
+try {
+  localConfig = (await import("./config.local.js")).default || {};
+} catch {
+  // Optional overrides file — safe to omit in production packages.
+}
+
 const config = {
   ...defaults,
-  ...(localConfig || {}),
+  ...localConfig,
 };
 
 export const VALIDATOR_API_URL =

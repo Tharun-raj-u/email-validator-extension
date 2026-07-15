@@ -2,6 +2,7 @@ import { parseOcrTextToTable } from "./ocr-parse.js";
 import {
   getUniqueEmails,
   extractTrustworthyEmails,
+  extractEmailsFromText,
 } from "./csv.js";
 
 const ROW_NUMBER_TRIM_PX = 40;
@@ -26,14 +27,19 @@ function parseOcrResult(text) {
   const parsed = parseOcrTextToTable(text);
   if (parsed?.rows?.length) return parsed;
 
-  const rawEmails = extractTrustworthyEmails(text);
+  const rawEmails = [
+    ...new Set([
+      ...extractTrustworthyEmails(text),
+      ...extractEmailsFromText(text),
+    ]),
+  ];
   if (rawEmails.length > 0) {
     return {
       source: "google-sheets-ocr",
       headers: ["email"],
       rows: rawEmails.map((email) => [email]),
       warning:
-        "OCR could not build full columns. Only verified emails were kept. Scroll and scan again for better structure.",
+        "OCR could not build full columns. Emails were extracted from the image. Scroll for more rows and run OCR again if needed.",
     };
   }
 

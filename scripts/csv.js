@@ -103,18 +103,51 @@ function resolveHeaderIndex(headerRow, columnName) {
   if (!key) return -1;
 
   const headers = headerRow.map((h) => normalizeHeader(h));
+
+  // Exact match first
   let idx = headers.indexOf(key);
   if (idx !== -1) return idx;
 
-  idx = headerRow.findIndex((h) => {
-    const n = normalizeHeader(h);
-    return n.includes(key) || key.includes(n);
+  // Alias groups
+  const aliasGroups = [
+    ["name", "fullname", "company", "companyname", "business", "businessname", "contact", "contactname", "personname"],
+    [
+      "email",
+      "emailid",
+      "emailaddress",
+      "mail",
+      "workemail",
+      "primaryemail",
+      "personalemail",
+      "personemail",
+      "companyemail",
+    ],
+    ["phone", "mobile", "tel", "telephone", "phonenumber", "contactnumber", "cell", "personphone"],
+    ["url", "website", "site", "companyurl", "websiteurl", "link", "domain"],
+  ];
+  const group = aliasGroups.find((g) => g.includes(key));
+  if (group) {
+    idx = headers.findIndex((n) => group.includes(n));
+    if (idx !== -1) return idx;
+    idx = headers.findIndex((n) =>
+      group.some((a) => n === a || n.endsWith(a) || n.startsWith(a))
+    );
+    if (idx !== -1) return idx;
+  }
+
+  // Soft match: personal_email ↔ person_email, company_name ↔ name
+  idx = headers.findIndex((n) => {
+    if (!n) return false;
+    if (n.includes(key) || key.includes(n)) return true;
+    // strip personal/person/company prefixes and compare
+    const strip = (s) => s.replace(/^(personal|person|company|work|primary)/, "");
+    return strip(n) && strip(n) === strip(key);
   });
   return idx;
 }
 
 /**
- * Map pasted rows to configured column names.
+ * Filter / reorder rows to only the configured columns.
  * Uses header-name matching when possible, otherwise maps by column position.
  */
 export function applyColumnMap(rows, preferredColumns = []) {
@@ -143,7 +176,8 @@ export function applyColumnMap(rows, preferredColumns = []) {
   }
 
   if (preferred.length === 1 && isEmailHeader(preferred[0])) {
-    const pseudoHeaders = dataRows[0]?.map((_, i) => `column_${i + 1}`) || [];
+    const width = Math.max(...dataRows.map((r) => r.length), 1);
+    const pseudoHeaders = Array.from({ length: width }, (_, i) => `column_${i + 1}`);
     const emailIdx = findEmailColumnIndex(pseudoHeaders, dataRows);
     if (emailIdx >= 0) {
       return [
@@ -313,23 +347,44 @@ export function buildCsv(headers, rows) {
 }
 
 export function insertValidColumn(headers, rows, emailColIdx, validationMap) {
+  // Drop any existing valid columns so we never duplicate them.
+  const keepIdx = [];
+  for (let i = 0; i < headers.length; i++) {
+    if (String(headers[i] || "").trim().toLowerCase() !== "valid") {
+      keepIdx.push(i);
+    }
+  }
+  let cleanHeaders = keepIdx.map((i) => headers[i]);
+  let cleanRows = rows.map((row) => keepIdx.map((i) => row[i] ?? ""));
+
+  let emailIdx = emailColIdx;
+  if (emailIdx >= 0) {
+    const originalEmailHeader = headers[emailColIdx];
+    emailIdx = cleanHeaders.findIndex(
+      (h, i) => i === keepIdx.indexOf(emailColIdx) || h === originalEmailHeader
+    );
+    if (emailIdx < 0) {
+      emailIdx = findEmailColumnIndex(cleanHeaders, cleanRows);
+    }
+  } else {
+    emailIdx = findEmailColumnIndex(cleanHeaders, cleanRows);
+  }
+  if (emailIdx < 0) emailIdx = Math.max(0, cleanHeaders.length - 1);
+
   const newHeaders = [
-    ...headers.slice(0, emailColIdx + 1),
+    ...cleanHeaders.slice(0, emailIdx + 1),
     "valid",
-    ...headers.slice(emailColIdx + 1),
+    ...cleanHeaders.slice(emailIdx + 1),
   ];
 
-  const newRows = rows.map((row) => {
-    const email = extractEmailFromCell(row[emailColIdx]);
-    let valid = "";
-    if (email) {
-      valid = validationMap.get(email) ?? "";
-    }
-    return [
-      ...row.slice(0, emailColIdx + 1),
-      valid,
-      ...row.slice(emailColIdx + 1),
-    ];
+  const newRows = cleanRows.map((row) => {
+    const email =
+      extractEmailCandidateFromCell(row[emailIdx]) ||
+      extractEmailFromCell(row[emailIdx]);
+    const valid = email
+      ? resolveValidationStatusForEmail(email, validationMap)
+      : "";
+    return [...row.slice(0, emailIdx + 1), valid, ...row.slice(emailIdx + 1)];
   });
 
   return { headers: newHeaders, rows: newRows };
@@ -371,6 +426,71 @@ export function extractEmailFromCell(value) {
   return found[0] || "";
 }
 
+/** Looser extract for sheet write-back (includes truncated / incomplete addresses). */
+const LOOSE_EMAIL_PATTERN =
+  /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{1,24}/g;
+
+export function extractEmailCandidateFromCell(value) {
+  const trusted = extractEmailFromCell(value);
+  if (trusted) return trusted;
+
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const matches = text.match(LOOSE_EMAIL_PATTERN) || [];
+  if (matches.length) return matches[0].toLowerCase();
+
+  const simple = text.toLowerCase();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(simple)) return simple;
+  return "";
+}
+
+/**
+ * Resolve validation status for a sheet cell email, with fuzzy key matching.
+ * Format-broken candidates that were never validated → Invalid.
+ */
+export function resolveValidationStatusForEmail(email, validationMap) {
+  if (!email) return "";
+
+  const map =
+    validationMap instanceof Map
+      ? validationMap
+      : new Map(Object.entries(validationMap || {}));
+
+  const key = String(email).trim().toLowerCase();
+  if (map.has(key)) {
+    return normalizeValidationLabel(map.get(key));
+  }
+
+  const [local, domain] = key.split("@");
+  if (local && domain) {
+    for (const [mappedEmail, status] of map.entries()) {
+      const [mLocal, mDomain] = String(mappedEmail).split("@");
+      if (!mLocal || !mDomain || mLocal !== local) continue;
+      if (
+        mDomain === domain ||
+        mDomain.startsWith(domain) ||
+        domain.startsWith(mDomain)
+      ) {
+        return normalizeValidationLabel(status);
+      }
+    }
+  }
+
+  if (!isValidEmailFormat(key) || !isTrustworthyEmail(key)) {
+    return "Invalid";
+  }
+
+  return "Unknown";
+}
+
+function normalizeValidationLabel(status) {
+  const s = String(status || "").trim().toLowerCase();
+  if (s === "valid") return "Valid";
+  if (s === "invalid") return "Invalid";
+  return "Unknown";
+}
+
 export function getUniqueEmails(extractedData) {
   const { headers, rows, source } = extractedData;
 
@@ -396,12 +516,6 @@ export function getUniqueEmails(extractedData) {
 export function getPreviewTable(headers, rows, limit = 5) {
   const previewRows = rows.slice(0, limit);
   return { headers, rows: previewRows };
-}
-
-export function limitEmailList(emails, maxCount) {
-  const n = parseInt(maxCount, 10);
-  if (!n || n <= 0 || n >= emails.length) return emails;
-  return emails.slice(0, n);
 }
 
 export function buildMergedOutput(extractedData, validationMap) {

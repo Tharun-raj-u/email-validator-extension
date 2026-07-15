@@ -1,5 +1,6 @@
 import {
   extractTrustworthyEmails,
+  extractEmailsFromText,
   isTrustworthyEmail,
   normalizeHeader,
   findEmailColumnIndex,
@@ -340,9 +341,31 @@ export function parseLineToCells(line) {
 }
 
 export function parseOcrTextToTable(ocrText) {
-  if (!ocrText || !ocrText.includes("@")) return null;
+  if (!ocrText) return null;
 
-  const lines = fixOcrEmailSpaces(ocrText)
+  let text = String(ocrText);
+  // Worker may return JSON strings or nested payloads already flattened to text.
+  if (text.trim().startsWith("{") || text.trim().startsWith("[")) {
+    try {
+      const json = JSON.parse(text);
+      if (typeof json === "string") text = json;
+      else if (json && typeof json === "object") {
+        text =
+          json.text ||
+          json.result ||
+          json.ocr_text ||
+          json.content ||
+          (Array.isArray(json.lines) ? json.lines.join("\n") : "") ||
+          text;
+      }
+    } catch {
+      /* keep raw text */
+    }
+  }
+
+  if (!text.includes("@")) return null;
+
+  const lines = fixOcrEmailSpaces(text)
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !isNoiseLine(l));
@@ -355,6 +378,7 @@ export function parseOcrTextToTable(ocrText) {
     .filter(
       (row) =>
         extractTrustworthyEmails(row.join(" ")).length > 0 ||
+        extractEmailsFromText(row.join(" ")).length > 0 ||
         row.filter((c) => cellText(c)).length >= 2
     );
 
@@ -377,7 +401,7 @@ export function parseOcrTextToTable(ocrText) {
   }
 
   const anchored = parseEmailAnchoredRows(lines);
-  if (anchored) return anchored;
+  if (anchored?.rows?.length) return anchored;
 
   return null;
 }

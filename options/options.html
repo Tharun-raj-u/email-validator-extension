@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MailMiner Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div class="hero-brand">
+        <img src="../icons/icon48.png" alt="" width="48" height="48" />
+        <div>
+          <h1>MailMiner Settings</h1>
+          <p>Google account for reading and updating Sheets</p>
+        </div>
+      </div>
+      <button
+        id="themeToggle"
+        class="theme-toggle"
+        type="button"
+        aria-label="Toggle light and dark theme"
+        title="Toggle theme"
+      >
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M20 14.5A7.5 7.5 0 0 1 9.5 4 6 6 0 1 0 20 14.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </header>
+
+    <section class="panel">
+      <div class="panel-head"><span>Google account</span></div>
+      <p class="muted intro">
+        Sign in so MailMiner can read the Google Sheet open in your browser and write a
+        <strong>Valid</strong> column after validation.
+      </p>
+      <div id="accountCard" class="account-card signed-out">
+        <div id="accountAvatar" class="avatar" aria-hidden="true">G</div>
+        <div class="account-text">
+          <strong id="accountName">Not signed in</strong>
+          <span id="accountEmail" class="muted">Sign in to scan Google Sheets</span>
+        </div>
+      </div>
+      <div class="row-actions">
+        <button id="signInBtn" class="btn btn-primary" type="button">Sign in with Google</button>
+        <button id="signOutBtn" class="btn btn-ghost hidden" type="button">Sign out</button>
+      </div>
+    </section>
+
+    <p id="statusMsg" class="toast hidden"></p>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

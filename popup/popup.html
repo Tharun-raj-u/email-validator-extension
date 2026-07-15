@@ -33,6 +33,20 @@
       </button>
     </header>
 
+    <section class="account-strip" id="accountStrip">
+      <div class="account-strip-main">
+        <div id="accountAvatar" class="account-avatar" aria-hidden="true">G</div>
+        <div class="account-strip-text">
+          <strong id="accountName">Google Sheets</strong>
+          <span id="accountEmail" class="muted">Not signed in</span>
+        </div>
+      </div>
+      <div class="account-strip-actions">
+        <button id="accountSignInBtn" class="btn btn-ghost btn-small" type="button">Sign in</button>
+        <button id="openSettingsBtn" class="btn btn-ghost btn-small" type="button">Settings</button>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-head">
         <span>Paste data</span>
@@ -45,26 +59,31 @@
       <label class="field" for="columnConfig">
         <span class="field-label">Column map</span>
         <input id="columnConfig" class="field-input" type="text" value="name,email,phone" placeholder="name,email,phone" />
-        <span class="field-hint">Used on scan and paste. Matches headers when present; maps by position otherwise.</span>
+        <span class="field-hint">Only these columns are kept (e.g. company_name,person_email). Use exact header names when possible.</span>
       </label>
     </section>
 
     <section class="panel panel-compact">
-      <div class="option-grid">
+      <div class="option-grid option-grid-3">
         <fieldset class="option-group">
           <legend>Export</legend>
           <label class="toggle"><input type="checkbox" id="exportCsv" checked /><span>CSV</span></label>
           <label class="toggle"><input type="checkbox" id="exportJson" /><span>JSON</span></label>
+          <label class="toggle"><input type="checkbox" id="exportValidUnknown" checked /><span>Valid + Unknown only</span></label>
         </fieldset>
         <fieldset class="option-group">
           <legend>Delivery</legend>
           <label class="toggle"><input type="checkbox" id="deliveryDownload" checked /><span>Download</span></label>
           <label class="toggle"><input type="checkbox" id="deliveryCopy" /><span>Copy</span></label>
+          <label class="toggle"><input type="checkbox" id="deliveryNewSpreadsheet" /><span>New spreadsheet</span></label>
+          <label class="toggle"><input type="checkbox" id="deliveryNewBlankSheet" /><span>New blank sheet</span></label>
+          <label class="toggle"><input type="checkbox" id="deliveryUpdateCurrentSheet" /><span>Update current sheet</span></label>
         </fieldset>
       </div>
     </section>
 
     <button id="scanBtn" class="btn btn-primary" type="button">Scan current page</button>
+    <button id="ocrBtn" class="btn btn-secondary" type="button">OCR parse (images)</button>
 
     <section id="scanInfo" class="panel hidden">
       <div class="panel-head"><span>Results</span></div>
@@ -114,6 +133,11 @@
         <button id="copyCsvBtn" class="btn btn-ghost" type="button" disabled>CSV</button>
         <button id="copyJsonBtn" class="btn btn-ghost" type="button" disabled>JSON</button>
       </div>
+    </section>
+
+    <section id="sheetLinkPanel" class="panel sheet-link-panel hidden">
+      <div class="panel-head"><span>Created spreadsheet</span></div>
+      <a id="createdSheetLink" class="created-sheet-link" href="#" target="_blank" rel="noopener noreferrer">Open in Google Sheets</a>
     </section>
 
     <p id="statusMsg" class="toast hidden"></p>
