@@ -2,9 +2,9 @@ import localConfig from "./config.local.js";
 
 const defaults = {
   VALIDATOR_API_URL: "https://validator-api.fsgarage.in/api/v1/validate/email",
-  OCR_API_URL: "https://hackathon-ocr-worker-1.dygkh7.easypanel.host/file",
-  // Set OCR_SPACE_API_KEY in config.local.js to use OCR.space locally instead.
-  OCR_SPACE_API_KEY: "",
+  OCR_API_URL: "https://hackathon-ocr-worker-2.dygkh7.easypanel.host/ocr",
+  VALIDATION_BATCH_SIZE: 100,
+  VALIDATION_EMAILS_PER_SEC: 100,
 };
 
 const config = {
@@ -15,4 +15,7 @@ const config = {
 export const VALIDATOR_API_URL =
   config.VALIDATOR_API_URL || defaults.VALIDATOR_API_URL;
 export const OCR_API_URL = config.OCR_API_URL || defaults.OCR_API_URL;
-export const OCR_SPACE_API_KEY = config.OCR_SPACE_API_KEY || "";
+export const VALIDATION_BATCH_SIZE =
+  config.VALIDATION_BATCH_SIZE ?? defaults.VALIDATION_BATCH_SIZE;
+export const VALIDATION_EMAILS_PER_SEC =
+  config.VALIDATION_EMAILS_PER_SEC ?? defaults.VALIDATION_EMAILS_PER_SEC;

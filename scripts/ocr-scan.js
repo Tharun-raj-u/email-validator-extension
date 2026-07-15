@@ -1,95 +1,12 @@
 import { parseOcrTextToTable } from "./ocr-parse.js";
 import {
   getUniqueEmails,
-  findEmailColumnIndex,
-  extractEmailsFromText,
+  extractTrustworthyEmails,
 } from "./csv.js";
-import { OCR_SPACE_API_KEY, OCR_API_URL } from "./config.js";
-import Tesseract from "../vendor/tesseract/tesseract.esm.min.js";
 
 const ROW_NUMBER_TRIM_PX = 40;
-const OCR_VARIANT_MAX_DIMENSION = 2200;
-const DEFAULT_SCROLL_STEPS = 25;
-const MAX_STAGNANT_SEGMENTS = 3;
 
-async function getScanPlan(tabId) {
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId, allFrames: false },
-    func: () => {
-      function getBestRowCount() {
-        const candidates = [];
-        for (const el of document.querySelectorAll("[aria-rowcount]")) {
-          const raw = parseInt(el.getAttribute("aria-rowcount"), 10);
-          if (!Number.isNaN(raw) && raw > 0) candidates.push(raw);
-        }
-        if (candidates.length === 0) return null;
-        return Math.max(...candidates);
-      }
-
-      const grid =
-        document.querySelector("#grid-container [role='grid']") ||
-        document.querySelector("#waffle-grid-container [role='grid']") ||
-        document.querySelector("[role='grid']") ||
-        document.querySelector("#grid-container") ||
-        document.querySelector("#waffle-grid-container");
-
-      if (!grid) {
-        return {
-          suggestedSteps: 25,
-          totalRows: null,
-          visibleRows: null,
-        };
-      }
-
-      const rowIndices = new Set();
-      const rows = grid.querySelectorAll('[role="row"][aria-rowindex]');
-      for (const row of rows) {
-        const idx = parseInt(row.getAttribute("aria-rowindex"), 10);
-        if (!Number.isNaN(idx) && idx > 1) rowIndices.add(idx);
-      }
-
-      if (rowIndices.size === 0) {
-        const cells = grid.querySelectorAll('[role="gridcell"][aria-rowindex]');
-        for (const cell of cells) {
-          const idx = parseInt(cell.getAttribute("aria-rowindex"), 10);
-          if (!Number.isNaN(idx) && idx > 1) rowIndices.add(idx);
-        }
-      }
-
-      const visibleRows = Math.max(1, rowIndices.size || 20);
-      const ariaRowCount = getBestRowCount();
-      const totalRows = ariaRowCount ? Math.max(0, ariaRowCount - 1) : null;
-
-      if (!totalRows) {
-        return {
-          suggestedSteps: Math.max(1, Math.min(8, Math.ceil(visibleRows / 8))),
-          totalRows: null,
-          visibleRows,
-        };
-      }
-
-      const stride = Math.max(1, Math.floor(visibleRows * 0.8));
-      const estimatedSteps = Math.ceil(totalRows / stride);
-
-      return {
-        suggestedSteps: Math.max(1, Math.min(300, estimatedSteps)),
-        totalRows,
-        visibleRows,
-      };
-    },
-  });
-
-  return (
-    result?.result || {
-      suggestedSteps: DEFAULT_SCROLL_STEPS,
-      totalRows: null,
-      visibleRows: null,
-    }
-  );
-}
-
-async function callProductionOcrApi(dataUrl) {
-  // Route through background service worker to avoid CORS restrictions.
+function callOcrApi(dataUrl) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: "OCR_REQUEST", dataUrl }, (response) => {
       if (chrome.runtime.lastError) {
@@ -105,415 +22,22 @@ async function callProductionOcrApi(dataUrl) {
   });
 }
 
-async function callOcrSpaceApi(dataUrl) {
-  const base64Image = dataUrl.replace(/^data:image\/[a-z]+;base64,/, "");
+function parseOcrResult(text) {
+  const parsed = parseOcrTextToTable(text);
+  if (parsed?.rows?.length) return parsed;
 
-  const formData = new FormData();
-  formData.append("base64Image", "data:image/png;base64," + base64Image);
-  formData.append("apikey", OCR_SPACE_API_KEY);
-  formData.append("language", "eng");
-  formData.append("OCREngine", "2");
-  formData.append("isTable", "true");
-
-  const response = await fetch("https://api.ocr.space/parse/image", {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(`OCR.space request failed: HTTP ${response.status}`);
-  }
-
-  const json = await response.json();
-
-  if (json.IsErroredOnProcessing) {
-    throw new Error(`OCR.space error: ${json.ErrorMessage?.[0] || "Unknown error"}`);
-  }
-
-  const parsed = json.ParsedResults?.[0];
-  if (!parsed) {
-    throw new Error("OCR.space returned no results.");
-  }
-
-  return parsed.ParsedText || "";
-}
-
-function isRateLimitError(error) {
-  const text = String(error?.message || error || "");
-  return /rate limit exceeded|retryafter|free plan/i.test(text);
-}
-
-async function callLocalOcr(dataUrl, callbacks = {}) {
-  const { onStatus } = callbacks;
-  onStatus?.("Running local OCR fallback…");
-
-  const result = await Tesseract.recognize(dataUrl, "eng", {
-    logger: (message) => {
-      if (message?.status === "recognizing text") {
-        const progress = typeof message.progress === "number"
-          ? Math.round(message.progress * 100)
-          : null;
-        onStatus?.(
-          progress == null ? "Local OCR in progress…" : `Local OCR in progress… ${progress}%`
-        );
-      }
-    },
-  });
-
-  return result?.data?.text || "";
-}
-
-function clampCanvasSize(width, height, maxDimension = OCR_VARIANT_MAX_DIMENSION) {
-  if (width <= maxDimension && height <= maxDimension) {
-    return { width, height, scale: 1 };
-  }
-
-  const scale = Math.min(maxDimension / width, maxDimension / height);
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-    scale,
-  };
-}
-
-function createCanvasContext(width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: false });
-  if (!ctx) {
-    throw new Error("Could not create image processing context.");
-  }
-  return { canvas, ctx };
-}
-
-function drawBaseImage(image, maxDimension) {
-  const size = clampCanvasSize(image.width, image.height, maxDimension);
-  const { canvas, ctx } = createCanvasContext(size.width, size.height);
-  ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, size.width, size.height);
-  return { canvas, ctx, scale: size.scale };
-}
-
-function convertCanvasToDataUrl(canvas) {
-  return canvas.toDataURL("image/png");
-}
-
-function applyHighContrast(ctx, width, height) {
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const { data } = imageData;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
-    const contrast = gray > 210 ? 255 : gray < 150 ? 0 : gray;
-    data[i] = contrast;
-    data[i + 1] = contrast;
-    data[i + 2] = contrast;
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-}
-
-async function buildOcrImageVariants(dataUrl) {
-  const image = await loadImage(dataUrl);
-  const base = drawBaseImage(image, OCR_VARIANT_MAX_DIMENSION);
-  return [
-    {
-      label: "base",
-      dataUrl: convertCanvasToDataUrl(base.canvas),
-    },
-  ];
-}
-
-async function runBestEffortOcr(dataUrl, callbacks = {}) {
-  const { onStatus, onProgress } = callbacks;
-
-  // Build variants fresh for this invocation — no module-level state.
-  const variants = await buildOcrImageVariants(dataUrl);
-  onStatus?.("Running OCR…");
-
-  // Use production OCR worker when no OCR.space key is configured (production).
-  // Fall back to OCR.space when a key is present (local dev).
-  const useOcrSpace = Boolean(OCR_SPACE_API_KEY);
-  const settled = await Promise.allSettled(
-    variants.map((v) =>
-      useOcrSpace ? callOcrSpaceApi(v.dataUrl) : callProductionOcrApi(v.dataUrl)
-    )
-  );
-
-  onProgress?.(1);
-
-  let bestResult = null;
-  let firstError = null;
-  let needsLocalFallback = false;
-
-  for (const outcome of settled) {
-    if (outcome.status === "rejected") {
-      if (!firstError) firstError = outcome.reason;
-      if (isRateLimitError(outcome.reason)) {
-        needsLocalFallback = true;
-      }
-      continue;
-    }
-
-    const text = outcome.value;
-    const rawEmails = extractEmailsFromText(text);
-    const parsed = parseOcrTextToTable(text);
-    const parsedEmails = parsed ? getUniqueEmails(parsed) : [];
-    const candidate = {
-      parsed,
-      rawEmails,
-      rawEmailCount: rawEmails.length,
-      parsedEmailCount: parsedEmails.length,
-      rowCount: parsed?.rows?.length || 0,
+  const rawEmails = extractTrustworthyEmails(text);
+  if (rawEmails.length > 0) {
+    return {
+      source: "google-sheets-ocr",
+      headers: ["email"],
+      rows: rawEmails.map((email) => [email]),
+      warning:
+        "OCR could not build full columns. Only verified emails were kept. Scroll and scan again for better structure.",
     };
-
-    if (
-      !bestResult ||
-      candidate.rawEmailCount > bestResult.rawEmailCount ||
-      (candidate.rawEmailCount === bestResult.rawEmailCount &&
-        candidate.parsedEmailCount > bestResult.parsedEmailCount) ||
-      (candidate.rawEmailCount === bestResult.rawEmailCount &&
-        candidate.parsedEmailCount === bestResult.parsedEmailCount &&
-        candidate.rowCount > bestResult.rowCount)
-    ) {
-      bestResult = candidate;
-    }
   }
 
-  if (needsLocalFallback) {
-    try {
-      for (const variant of variants) {
-        const text = await callLocalOcr(variant.dataUrl, { onStatus });
-        const rawEmails = extractEmailsFromText(text);
-        if (rawEmails.length === 0) continue;
-
-        const parsed = parseOcrTextToTable(text);
-        const parsedEmails = parsed ? getUniqueEmails(parsed) : [];
-
-        if (parsed && parsedEmails.length >= Math.max(2, Math.ceil(rawEmails.length * 0.4))) {
-          return {
-            ...parsed,
-            warning: `${parsed.warning || "OCR used a local fallback because the API rate-limited this request."}`,
-          };
-        }
-
-        return {
-          source: "google-sheets-ocr",
-          headers: ["email"],
-          rows: rawEmails.map((email) => [email]),
-          warning:
-            "OCR.space rate-limited this request, so the scan used local OCR fallback. Table structure may be less accurate.",
-        };
-      }
-    } catch (fallbackError) {
-      firstError = firstError || fallbackError;
-    }
-  }
-
-  if (bestResult) {
-    const { parsed, rawEmails, parsedEmailCount, rawEmailCount } = bestResult;
-
-    // Use table parse when it captures a substantial portion of recognized emails.
-    if (parsed && parsedEmailCount >= Math.max(2, Math.ceil(rawEmailCount * 0.4))) {
-      return parsed;
-    }
-
-    // Fallback: keep email-only rows so OCR hits are not dropped by table parsing.
-    if (rawEmails.length > 0) {
-      return {
-        source: "google-sheets-ocr",
-        headers: ["email"],
-        rows: rawEmails.map((email) => [email]),
-        warning:
-          "OCR used email-only fallback because table parsing quality was low. Scroll and scan again for better structure.",
-      };
-    }
-  }
-
-  if (firstError) throw firstError;
-  throw new Error(
-    "OCR found no emails in the visible sheet area. Scroll so rows are visible and try again."
-  );
-}
-
-function mergeParsedSegments(segments) {
-  if (!segments.length) return null;
-
-  const base = segments[0];
-  const headers = [...base.headers];
-  const mergedRows = [];
-
-  for (const segment of segments) {
-    for (const row of segment.rows) {
-      const normalized = [...row];
-      while (normalized.length < headers.length) normalized.push("");
-      mergedRows.push(normalized.slice(0, headers.length));
-    }
-  }
-
-  const emailColIdx = findEmailColumnIndex(headers, mergedRows);
-  const dedupedRows = [];
-  const seenEmails = new Set();
-  const seenRows = new Set();
-
-  for (const row of mergedRows) {
-    const rowKey = row.join("\u0001");
-    if (emailColIdx !== -1) {
-      const email = (row[emailColIdx] || "").trim().toLowerCase();
-      if (email) {
-        if (seenEmails.has(email)) continue;
-        seenEmails.add(email);
-        dedupedRows.push(row);
-        continue;
-      }
-    }
-    if (!seenRows.has(rowKey)) {
-      seenRows.add(rowKey);
-      dedupedRows.push(row);
-    }
-  }
-
-  return {
-    source: "google-sheets-ocr",
-    headers,
-    rows: dedupedRows,
-    warning: `${segments[0].warning} Captured ${segments.length} viewport segment${segments.length === 1 ? "" : "s"}.`,
-  };
-}
-
-async function scrollSheetDown(tabId) {
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId, allFrames: false },
-    func: () => {
-      function getVisibleSignature(grid) {
-        const rowIndexes = [];
-
-        for (const row of grid.querySelectorAll('[role="row"][aria-rowindex]')) {
-          const idx = parseInt(row.getAttribute("aria-rowindex"), 10);
-          if (!Number.isNaN(idx) && idx > 0) rowIndexes.push(idx);
-        }
-
-        if (rowIndexes.length === 0) {
-          for (const cell of grid.querySelectorAll('[role="gridcell"][aria-rowindex]')) {
-            const idx = parseInt(cell.getAttribute("aria-rowindex"), 10);
-            if (!Number.isNaN(idx) && idx > 0) rowIndexes.push(idx);
-          }
-        }
-
-        if (rowIndexes.length === 0) return "rows:none";
-        const min = Math.min(...rowIndexes);
-        const max = Math.max(...rowIndexes);
-        return `rows:${min}-${max}:${rowIndexes.length}`;
-      }
-
-      function uniqueElements(items) {
-        const seen = new Set();
-        const out = [];
-        for (const el of items) {
-          if (!el || seen.has(el)) continue;
-          seen.add(el);
-          out.push(el);
-        }
-        return out;
-      }
-
-      function getScrollableAncestors(el) {
-        const list = [];
-        let node = el;
-        while (node && node !== document.body) {
-          if (node instanceof HTMLElement) {
-            const canScroll = node.scrollHeight > node.clientHeight + 12;
-            if (canScroll) list.push(node);
-          }
-          node = node.parentElement;
-        }
-        return list;
-      }
-
-      const grid =
-        document.querySelector("#grid-container [role='grid']") ||
-        document.querySelector("#waffle-grid-container [role='grid']") ||
-        document.querySelector("[role='grid']") ||
-        document.querySelector("#grid-container") ||
-        document.querySelector("#waffle-grid-container");
-
-      if (!grid) {
-        return { moved: false, reason: "No sheet grid found." };
-      }
-
-      const beforeSignature = getVisibleSignature(grid);
-
-      const rect = grid.getBoundingClientRect();
-      const cx = Math.floor(rect.left + rect.width / 2);
-      const cy = Math.floor(rect.top + rect.height / 2);
-      const pointEl = document.elementFromPoint(cx, cy);
-
-      const candidates = uniqueElements([
-        ...getScrollableAncestors(pointEl),
-        ...getScrollableAncestors(grid),
-        grid,
-        document.scrollingElement,
-      ]);
-
-      let moved = false;
-      let usedTarget = "";
-
-      for (const target of candidates) {
-        if (!(target instanceof HTMLElement) && target !== document.scrollingElement) continue;
-
-        const before = target.scrollTop;
-        const step = Math.max(120, Math.floor((target.clientHeight || window.innerHeight) * 0.9));
-
-        if (target instanceof HTMLElement) {
-          target.focus?.({ preventScroll: true });
-          target.dispatchEvent(
-            new WheelEvent("wheel", { deltaY: step, bubbles: true, cancelable: true })
-          );
-        }
-
-        target.scrollTop = before + step;
-
-        if (target.scrollTop === before && target instanceof HTMLElement) {
-          target.dispatchEvent(
-            new WheelEvent("wheel", { deltaY: step, bubbles: true, cancelable: true })
-          );
-        }
-
-        if (target.scrollTop === before && target instanceof HTMLElement) {
-          target.dispatchEvent(
-            new KeyboardEvent("keydown", { key: "PageDown", code: "PageDown", bubbles: true })
-          );
-        }
-
-        if (target.scrollTop > before) {
-          moved = true;
-          usedTarget = (target.id && `#${target.id}`) || target.className || target.tagName || "unknown";
-          break;
-        }
-      }
-
-      // Fallback for virtualized panes where scrollTop may not expose movement.
-      if (!moved && grid instanceof HTMLElement) {
-        grid.focus?.({ preventScroll: true });
-        grid.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true })
-        );
-        grid.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "PageDown", code: "PageDown", bubbles: true })
-        );
-        window.scrollBy(0, Math.max(120, Math.floor(window.innerHeight * 0.75)));
-        usedTarget = usedTarget || "keyboard-fallback";
-      }
-
-      const afterSignature = getVisibleSignature(grid);
-      const viewportChanged = beforeSignature !== afterSignature;
-      moved = moved || viewportChanged;
-
-      return { moved, usedTarget, beforeSignature, afterSignature };
-    },
-  });
-
-  return result?.result || { moved: false };
+  return null;
 }
 
 async function getGridBounds(tabId) {
@@ -572,133 +96,23 @@ async function cropScreenshot(dataUrl, bounds) {
 }
 
 export async function runOcrScan(tabId, callbacks = {}) {
-  const { onStatus, onProgress, scrollSteps, autoScroll = true, saveImages = false } = callbacks;
+  const { onStatus } = callbacks;
   const tab = await chrome.tabs.get(tabId);
-  const plan = await getScanPlan(tabId);
-  const explicitSteps = parseInt(scrollSteps, 10);
-  const plannedSteps =
-    Number.isFinite(explicitSteps) && explicitSteps > 0
-      ? explicitSteps
-      : plan.suggestedSteps || DEFAULT_SCROLL_STEPS;
-  const maxSteps = autoScroll ? Math.max(1, plannedSteps) : 1;
 
-  onStatus?.(
-    plan.totalRows
-      ? `Estimated rows: ${plan.totalRows}, visible per view: ${plan.visibleRows || "?"}, planned captures: ${maxSteps}.`
-      : `Could not read total row count. Planned captures: ${maxSteps}.`
-  );
+  onStatus?.("Getting grid bounds…");
+  const bounds = await getGridBounds(tabId);
 
-  const segments = [];
-  const seenEmails = new Set();
-  const seenViewSignatures = new Set();
-  let stagnantSegments = 0;
-  const stagnantLimit = Math.max(MAX_STAGNANT_SEGMENTS, Math.min(10, Math.ceil(maxSteps * 0.15)));
+  onStatus?.("Capturing screenshot…");
+  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
 
-  for (let step = 0; step < maxSteps; step++) {
-    onStatus?.(`Capture ${step + 1}/${maxSteps}: getting bounds…`);
-    const bounds = await getGridBounds(tabId);
+  onStatus?.("Preparing image…");
+  const croppedDataUrl = await cropScreenshot(dataUrl, bounds);
 
-    const [signatureProbe] = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: false },
-      func: () => {
-        const grid =
-          document.querySelector("#grid-container [role='grid']") ||
-          document.querySelector("#waffle-grid-container [role='grid']") ||
-          document.querySelector("[role='grid']") ||
-          document.querySelector("#grid-container") ||
-          document.querySelector("#waffle-grid-container");
-        if (!grid) return "rows:none";
+  onStatus?.("Running OCR…");
+  const text = await callOcrApi(croppedDataUrl);
 
-        const indexes = [];
-        for (const row of grid.querySelectorAll('[role="row"][aria-rowindex]')) {
-          const idx = parseInt(row.getAttribute("aria-rowindex"), 10);
-          if (!Number.isNaN(idx) && idx > 0) indexes.push(idx);
-        }
-        if (indexes.length === 0) {
-          for (const cell of grid.querySelectorAll('[role="gridcell"][aria-rowindex]')) {
-            const idx = parseInt(cell.getAttribute("aria-rowindex"), 10);
-            if (!Number.isNaN(idx) && idx > 0) indexes.push(idx);
-          }
-        }
-        if (indexes.length === 0) return "rows:none";
-        return `rows:${Math.min(...indexes)}-${Math.max(...indexes)}:${indexes.length}`;
-      },
-    });
-
-    const currentSignature = signatureProbe?.result || "rows:none";
-    if (seenViewSignatures.has(currentSignature)) {
-      onStatus?.(`Capture ${step + 1}/${maxSteps}: same viewport detected, stopping duplicate captures.`);
-      break;
-    }
-    seenViewSignatures.add(currentSignature);
-
-    onStatus?.(`Capture ${step + 1}/${maxSteps}: screenshot…`);
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-
-    onStatus?.(`Capture ${step + 1}/${maxSteps}: preparing image…`);
-    const croppedDataUrl = await cropScreenshot(dataUrl, bounds);
-
-    if (saveImages) {
-      const a = document.createElement("a");
-      a.href = croppedDataUrl;
-      a.download = `ocr-capture-${Date.now()}-${step + 1}.png`;
-      a.click();
-    }
-
-    try {
-      const parsed = await runBestEffortOcr(croppedDataUrl, {
-        onStatus: (msg) => onStatus?.(`Capture ${step + 1}/${maxSteps}: ${msg}`),
-      });
-      if (parsed) {
-        segments.push(parsed);
-        const emails = getUniqueEmails(parsed);
-        let newEmailCount = 0;
-        for (const email of emails) {
-          if (!seenEmails.has(email)) {
-            seenEmails.add(email);
-            newEmailCount += 1;
-          }
-        }
-        if (newEmailCount === 0) {
-          stagnantSegments += 1;
-        } else {
-          stagnantSegments = 0;
-        }
-        onStatus?.(
-          `Capture ${step + 1}/${maxSteps}: +${newEmailCount} new email${newEmailCount === 1 ? "" : "s"} (${seenEmails.size} total).`
-        );
-      } else {
-        stagnantSegments += 1;
-      }
-    } catch {
-      // Continue to next segment so partial OCR still works.
-      stagnantSegments += 1;
-    }
-
-    onProgress?.((step + 1) / maxSteps);
-
-    if (autoScroll && step < maxSteps - 1) {
-      if (stagnantSegments >= stagnantLimit) {
-        onStatus?.(
-          `Capture ${step + 1}/${maxSteps}: stopping after ${stagnantSegments} segments with no new emails.`
-        );
-        break;
-      }
-      onStatus?.(`Capture ${step + 1}/${maxSteps}: scrolling down…`);
-      const scroll = await scrollSheetDown(tabId);
-      if (!scroll.moved) {
-        onStatus?.(`Capture ${step + 1}/${maxSteps}: reached end of visible sheet.`);
-        break;
-      }
-      if (scroll.usedTarget) {
-        onStatus?.(`Capture ${step + 1}/${maxSteps}: scrolled via ${scroll.usedTarget}.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    }
-  }
-
-  const parsed = mergeParsedSegments(segments);
-  if (!parsed || !parsed.rows.length) {
+  const parsed = parseOcrResult(text);
+  if (!parsed || !parsed.rows?.length) {
     throw new Error(
       "OCR found no emails in the visible sheet area. Scroll so rows are visible and try again."
     );
@@ -710,7 +124,7 @@ export async function runOcrScan(tabId, callbacks = {}) {
     success: true,
     data: {
       source: parsed.source,
-      sourceLabel: "Google Sheets (OCR)",
+      sourceLabel: "MailMiner OCR",
       headers: parsed.headers,
       rows: parsed.rows,
       emailCount: emails.length,

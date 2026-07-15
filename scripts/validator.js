@@ -1,7 +1,16 @@
-import { VALIDATOR_API_URL } from "./config.js";
+import {
+  VALIDATOR_API_URL,
+  VALIDATION_BATCH_SIZE,
+  VALIDATION_EMAILS_PER_SEC,
+} from "./config.js";
 
 const API_URL = VALIDATOR_API_URL;
-const DEFAULT_CONCURRENCY = 100;
+const DEFAULT_BATCH_SIZE = Math.max(1, VALIDATION_BATCH_SIZE || 100);
+const DEFAULT_EMAILS_PER_SEC = Math.max(1, VALIDATION_EMAILS_PER_SEC || 100);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function validateEmail(email) {
   try {
@@ -27,50 +36,61 @@ export async function validateEmail(email) {
 }
 
 export async function validateEmails(emails, onProgress, options = {}) {
-  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
-  const batchSize = Math.max(0, options.batchSize ?? 0);
+  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
+  const emailsPerSec = Math.max(1, options.emailsPerSec ?? DEFAULT_EMAILS_PER_SEC);
+  const batchDelayMs = Math.ceil((batchSize / emailsPerSec) * 1000);
   const onBatch = options.onBatch;
   const cache = new Map();
+  const uniqueEmails = [];
+  const seen = new Set();
+  for (const email of emails) {
+    const key = String(email || "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    uniqueEmails.push(key);
+  }
+
   let completed = 0;
-  const total = emails.length;
+  const total = uniqueEmails.length;
 
   async function validateBatch(batch) {
-    const queue = [...batch];
-
-    async function worker() {
-      while (queue.length > 0) {
-        const email = queue.shift();
-        if (!email || cache.has(email)) {
+    await Promise.all(
+      batch.map(async (email) => {
+        if (cache.has(email)) {
           completed++;
           onProgress?.(completed, total);
-          continue;
+          return;
         }
 
         const status = await validateEmail(email);
         cache.set(email, status);
         completed++;
         onProgress?.(completed, total);
-      }
-    }
-
-    const workers = Array.from(
-      { length: Math.min(concurrency, batch.length || 1) },
-      () => worker()
+      })
     );
-    await Promise.all(workers);
   }
 
-  if (batchSize > 0 && emails.length > batchSize) {
-    const batches = [];
-    for (let i = 0; i < emails.length; i += batchSize) {
-      batches.push(emails.slice(i, i + batchSize));
+  const batches = [];
+  for (let i = 0; i < uniqueEmails.length; i += batchSize) {
+    batches.push(uniqueEmails.slice(i, i + batchSize));
+  }
+
+  for (let i = 0; i < batches.length; i++) {
+    await validateBatch(batches[i]);
+    onBatch?.(i + 1, batches.length, batches[i].length, {
+      batchSize,
+      emailsPerSec,
+      batchDelayMs,
+    });
+    if (i < batches.length - 1 && batchDelayMs > 0) {
+      await sleep(batchDelayMs);
     }
-    for (let i = 0; i < batches.length; i++) {
-      await validateBatch(batches[i]);
-      onBatch?.(i + 1, batches.length, batches[i].length);
-    }
-  } else {
-    await validateBatch(emails);
+  }
+
+  for (const email of emails) {
+    const key = String(email || "").trim().toLowerCase();
+    if (!key || cache.has(key)) continue;
+    cache.set(key, "error");
   }
 
   return cache;

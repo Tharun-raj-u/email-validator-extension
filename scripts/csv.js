@@ -1,14 +1,43 @@
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_EXTRACT_PATTERN = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 
 export function isValidEmailFormat(value) {
   if (!value || typeof value !== "string") return false;
   return EMAIL_REGEX.test(value.trim());
 }
 
+/** Stricter check to drop OCR noise and broken tokens. */
+export function isTrustworthyEmail(value) {
+  if (!isValidEmailFormat(value)) return false;
+
+  const email = value.trim().toLowerCase();
+  if (email.length < 6 || email.length > 254) return false;
+  if (email.includes("..") || email.includes("@.") || email.includes(".@")) return false;
+
+  const [local, domain] = email.split("@");
+  if (!local || !domain || local.length < 1 || domain.length < 3) return false;
+  if (!domain.includes(".")) return false;
+
+  const tld = domain.split(".").pop() || "";
+  if (tld.length < 2 || tld.length > 24 || !/^[a-z]+$/.test(tld)) return false;
+  if (/^\d+$/.test(local) && local.length < 4) return false;
+  if (/^[._\-+]+$/.test(local)) return false;
+  if (/^(noreply|no-reply|donotreply|mailer-daemon)$/.test(local)) return false;
+
+  const domainBase = domain.slice(0, -(tld.length + 1));
+  if (!domainBase || domainBase.endsWith(".")) return false;
+  if (/[^a-z0-9.\-]/.test(domain)) return false;
+
+  return true;
+}
+
 export function extractEmailsFromText(text) {
-  const pattern = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-  const matches = text.match(pattern) || [];
+  const matches = String(text || "").match(EMAIL_EXTRACT_PATTERN) || [];
   return [...new Set(matches.map((e) => e.trim().toLowerCase()))];
+}
+
+export function extractTrustworthyEmails(text) {
+  return extractEmailsFromText(text).filter(isTrustworthyEmail);
 }
 
 export function splitDelimitedLine(line) {
@@ -24,6 +53,10 @@ export function splitDelimitedLine(line) {
 }
 
 export function parseColumnConfig(configText) {
+  if (Array.isArray(configText)) {
+    return configText.map((item) => String(item).trim()).filter(Boolean);
+  }
+
   const text = String(configText ?? "").trim();
   if (!text) return [];
 
@@ -48,42 +81,86 @@ export function parseColumnConfig(configText) {
     .filter(Boolean);
 }
 
-export function normalizeColumnsFromRows(rows, preferredColumns = []) {
-  const normalized = rows.map((row) => row.map((cell) => String(cell ?? "").trim()));
-  if (!normalized.length) return normalized;
-
-  const preferred = parseColumnConfig(preferredColumns);
-  if (preferred.length === 0) return normalized;
-
-  const headers = normalized[0].map((h) => normalizeHeader(h));
-  const mapIndex = new Map();
-  for (let i = 0; i < headers.length; i++) {
-    if (!mapIndex.has(headers[i])) mapIndex.set(headers[i], i);
-  }
-
-  const aliasMap = new Map();
-  for (const name of preferred) {
-    const key = normalizeHeader(name);
-    if (!key) continue;
-    aliasMap.set(key, name);
-  }
-
-  const selectedIndexes = [];
-  const selectedHeaders = [];
-  for (const name of preferred) {
-    const key = normalizeHeader(name);
-    const idx = mapIndex.get(key);
-    if (idx == null) continue;
-    selectedIndexes.push(idx);
-    selectedHeaders.push(aliasMap.get(key) || name);
-  }
-
-  if (selectedIndexes.length === 0) return normalized;
-
-  return normalized.map((row, rowIndex) => {
-    if (rowIndex === 0) return selectedHeaders;
-    return selectedIndexes.map((idx) => row[idx] ?? "");
+export function rowLooksLikeHeader(row) {
+  if (!Array.isArray(row) || row.length === 0) return false;
+  return row.some((cell) => {
+    const n = normalizeHeader(cell);
+    return (
+      n === "name" ||
+      n === "email" ||
+      n === "phone" ||
+      n === "contact" ||
+      n.includes("email") ||
+      n.includes("site") ||
+      n.includes("url") ||
+      n.includes("linkedin")
+    );
   });
+}
+
+function resolveHeaderIndex(headerRow, columnName) {
+  const key = normalizeHeader(columnName);
+  if (!key) return -1;
+
+  const headers = headerRow.map((h) => normalizeHeader(h));
+  let idx = headers.indexOf(key);
+  if (idx !== -1) return idx;
+
+  idx = headerRow.findIndex((h) => {
+    const n = normalizeHeader(h);
+    return n.includes(key) || key.includes(n);
+  });
+  return idx;
+}
+
+/**
+ * Map pasted rows to configured column names.
+ * Uses header-name matching when possible, otherwise maps by column position.
+ */
+export function applyColumnMap(rows, preferredColumns = []) {
+  const preferred = parseColumnConfig(preferredColumns);
+  const normalized = rows
+    .map((row) => (Array.isArray(row) ? row : [row]).map((cell) => String(cell ?? "").trim()))
+    .filter((row) => row.some((cell) => cell));
+
+  if (!normalized.length) return [];
+  if (!preferred.length) return normalized;
+
+  const hasHeader = normalized.length > 1 && rowLooksLikeHeader(normalized[0]);
+  const headerRow = hasHeader ? normalized[0] : [];
+  const dataRows = hasHeader ? normalized.slice(1) : normalized;
+
+  if (hasHeader && headerRow.length) {
+    const indexes = preferred.map((name) => resolveHeaderIndex(headerRow, name));
+    if (indexes.some((idx) => idx >= 0)) {
+      return [
+        preferred,
+        ...dataRows.map((row) =>
+          indexes.map((idx) => (idx >= 0 ? row[idx] ?? "" : ""))
+        ),
+      ];
+    }
+  }
+
+  if (preferred.length === 1 && isEmailHeader(preferred[0])) {
+    const pseudoHeaders = dataRows[0]?.map((_, i) => `column_${i + 1}`) || [];
+    const emailIdx = findEmailColumnIndex(pseudoHeaders, dataRows);
+    if (emailIdx >= 0) {
+      return [
+        preferred,
+        ...dataRows.map((row) => [row[emailIdx] ?? ""]),
+      ];
+    }
+  }
+
+  return [
+    preferred,
+    ...dataRows.map((row) => preferred.map((_, i) => row[i] ?? "")),
+  ];
+}
+
+export function normalizeColumnsFromRows(rows, preferredColumns = []) {
+  return applyColumnMap(rows, preferredColumns);
 }
 
 export function normalizeHeader(header) {
@@ -289,8 +366,8 @@ export function buildOutputText(extractedData, validationMap) {
 export function extractEmailFromCell(value) {
   if (!value) return "";
   const trimmed = value.trim();
-  if (isValidEmailFormat(trimmed)) return trimmed.toLowerCase();
-  const found = extractEmailsFromText(trimmed);
+  if (isTrustworthyEmail(trimmed)) return trimmed.toLowerCase();
+  const found = extractTrustworthyEmails(trimmed);
   return found[0] || "";
 }
 

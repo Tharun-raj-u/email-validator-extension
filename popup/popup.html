@@ -1,128 +1,99 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Email Validator</title>
+  <title>MailMiner</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="app">
-    <header class="header">
-      <div class="brand-mark" aria-hidden="true">
-        <img class="brand-logo" src="https://fleetstudio.s3.amazonaws.com/attachments/clsn2995t00jhz9qh2q11cxp0-favicon-fleet.png" alt="" />
+  <div class="shell">
+    <header class="topbar">
+      <div class="logo" aria-hidden="true">
+        <img src="../icons/icon48.png" alt="" width="40" height="40" />
       </div>
-      <div class="brand-copy">
-        <h1>Email Validator</h1>
-        <p class="subtitle">Paste, scan, validate, and export with a cleaner workflow.</p>
+      <div class="topbar-text">
+        <h1>MailMiner</h1>
+        <p>Email extraction &amp; validation</p>
       </div>
+      <button
+        id="themeToggle"
+        class="theme-toggle"
+        type="button"
+        aria-label="Toggle light and dark theme"
+        title="Toggle theme"
+      >
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M20 14.5A7.5 7.5 0 0 1 9.5 4 6 6 0 1 0 20 14.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
+      </button>
     </header>
 
-    <section class="card settings-card">
-      <h2 class="card-title">Options</h2>
-
-      <div class="paste-card">
-        <div class="paste-header">
-          <div>
-            <span class="field-label">Paste input</span>
-            <span class="field-hint">Paste raw text, CSV, JSON, or copied sheet content</span>
-          </div>
-          <div class="paste-actions-inline">
-            <button id="usePasteBtn" class="btn btn-secondary paste-action-btn" type="button">Use Pasted Input</button>
-            <button id="clearPasteBtn" class="btn btn-secondary paste-action-btn" type="button">Clear</button>
-          </div>
-        </div>
-        <textarea id="pasteInput" class="paste-input" rows="5" placeholder="Paste anything here. Emails will be extracted automatically."></textarea>
-        <div class="paste-config-row">
-          <label class="field" for="columnConfig">
-            <span class="field-label">Column config</span>
-            <span class="field-hint">Example: name,email,status,phone</span>
-            <input id="columnConfig" class="column-config" type="text" placeholder="name,email,status,phone" />
-          </label>
+    <section class="panel">
+      <div class="panel-head">
+        <span>Paste data</span>
+        <div class="panel-actions">
+          <button id="usePasteBtn" class="btn btn-ghost" type="button">Parse</button>
+          <button id="clearPasteBtn" class="btn btn-ghost" type="button">Clear</button>
         </div>
       </div>
-
-      <fieldset class="export-fieldset">
-        <legend>Export format</legend>
-        <label class="chip">
-          <input type="checkbox" id="exportCsv" checked />
-          <span>CSV</span>
-        </label>
-        <label class="chip">
-          <input type="checkbox" id="exportJson" />
-          <span>JSON</span>
-        </label>
-      </fieldset>
-
-      <fieldset class="export-fieldset delivery-fieldset">
-        <legend>Delivery</legend>
-        <label class="chip">
-          <input type="checkbox" id="deliveryDownload" checked />
-          <span>Download</span>
-        </label>
-        <label class="chip">
-          <input type="checkbox" id="deliveryCopy" />
-          <span>Copy</span>
-        </label>
-      </fieldset>
-
-      <fieldset class="export-fieldset delivery-fieldset">
-        <legend>OCR scan</legend>
-        <label class="chip">
-          <input type="checkbox" id="ocrSaveImages" />
-          <span>Save Images</span>
-        </label>
-      </fieldset>
+      <textarea id="pasteInput" class="paste-input" rows="4" placeholder="Paste CSV, TSV, or sheet rows…"></textarea>
+      <label class="field" for="columnConfig">
+        <span class="field-label">Column map</span>
+        <input id="columnConfig" class="field-input" type="text" value="name,email,phone" placeholder="name,email,phone" />
+        <span class="field-hint">Used on scan and paste. Matches headers when present; maps by position otherwise.</span>
+      </label>
     </section>
 
-    <button id="scanBtn" class="btn btn-primary">
-      <span class="btn-icon" aria-hidden="true">&#128269;</span>
-      Scan Current Page
-    </button>
-
-    <section id="scanInfo" class="card results-card hidden">
-      <h2 class="card-title">Scan results</h2>
-      <div class="stats-grid">
-        <div class="stat">
-          <span class="stat-value" id="sourceLabel">—</span>
-          <span class="stat-label">Source</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="rowCount">—</span>
-          <span class="stat-label">Rows</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="emailCount">—</span>
-          <span class="stat-label">Emails</span>
-        </div>
-        <div class="stat">
-          <span class="stat-value" id="validateCount">—</span>
-          <span class="stat-label">To validate</span>
-        </div>
+    <section class="panel panel-compact">
+      <div class="option-grid">
+        <fieldset class="option-group">
+          <legend>Export</legend>
+          <label class="toggle"><input type="checkbox" id="exportCsv" checked /><span>CSV</span></label>
+          <label class="toggle"><input type="checkbox" id="exportJson" /><span>JSON</span></label>
+        </fieldset>
+        <fieldset class="option-group">
+          <legend>Delivery</legend>
+          <label class="toggle"><input type="checkbox" id="deliveryDownload" checked /><span>Download</span></label>
+          <label class="toggle"><input type="checkbox" id="deliveryCopy" /><span>Copy</span></label>
+        </fieldset>
       </div>
-      <p id="warningMsg" class="warning hidden"></p>
     </section>
 
-    <button id="validateBtn" class="btn btn-accent hidden" disabled>
-      <span class="btn-icon" aria-hidden="true">&#10003;</span>
-      Validate &amp; Export
-    </button>
+    <button id="scanBtn" class="btn btn-primary" type="button">Scan current page</button>
 
-    <section id="progressPanel" class="card progress-card hidden">
-      <div class="progress-header">
+    <section id="scanInfo" class="panel hidden">
+      <div class="panel-head"><span>Results</span></div>
+      <div class="metrics">
+        <div class="metric"><b id="sourceLabel">—</b><span>Source</span></div>
+        <div class="metric"><b id="rowCount">—</b><span>Rows</span></div>
+        <div class="metric"><b id="emailCount">—</b><span>Emails</span></div>
+        <div class="metric"><b id="validateCount">—</b><span>Queue</span></div>
+      </div>
+      <p id="warningMsg" class="alert hidden"></p>
+    </section>
+
+    <button id="validateBtn" class="btn btn-secondary hidden" type="button" disabled>Validate &amp; export</button>
+
+    <section id="progressPanel" class="panel hidden">
+      <div class="progress-meta">
         <span id="progressText">0 / 0 validated</span>
-        <span id="batchText" class="batch-text"></span>
+        <span id="batchText"></span>
       </div>
-      <div class="progress-bar">
-        <div id="progressFill" class="progress-fill"></div>
-      </div>
+      <div class="progress-track"><div id="progressFill" class="progress-bar"></div></div>
     </section>
 
-    <section id="previewPanel" class="card preview-card hidden">
-      <div class="preview-header">
-        <h2 class="card-title">Preview</h2>
-        <label class="preview-filter" for="resultFilter">
-          <span>Show</span>
+    <section id="previewPanel" class="panel hidden">
+      <div class="panel-head">
+        <span>Preview</span>
+        <label class="filter" for="resultFilter">
+          <svg class="filter-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 6h16M7 12h10M10 18h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
           <select id="resultFilter">
             <option value="all">All</option>
             <option value="valid">Valid</option>
@@ -130,34 +101,22 @@
           </select>
         </label>
       </div>
-      <div id="previewTable" class="preview-table"></div>
+      <div id="previewTable" class="table-wrap"></div>
     </section>
 
-    <section id="copyPanel" class="card hidden">
-      <div class="copy-header">
-        <div>
-          <h2 class="card-title">Copy output</h2>
-          <p class="copy-note">Pick the format you want to paste into another app.</p>
-        </div>
-        <span id="copySummary" class="copy-summary">No output yet</span>
+    <section id="copyPanel" class="panel hidden">
+      <div class="panel-head">
+        <span>Copy output</span>
+        <span id="copySummary" class="muted">No output yet</span>
       </div>
-      <div class="copy-actions">
-        <button id="copyTxtBtn" class="btn btn-secondary copy-btn" type="button" disabled>
-          <span class="btn-icon" aria-hidden="true">&#128196;</span>
-          Copy TXT
-        </button>
-        <button id="copyCsvBtn" class="btn btn-secondary copy-btn" type="button" disabled>
-          <span class="btn-icon" aria-hidden="true">&#128462;</span>
-          Copy CSV
-        </button>
-        <button id="copyJsonBtn" class="btn btn-secondary copy-btn" type="button" disabled>
-          <span class="btn-icon" aria-hidden="true">&#123;</span>
-          Copy JSON
-        </button>
+      <div class="copy-row">
+        <button id="copyTxtBtn" class="btn btn-ghost" type="button" disabled>TXT</button>
+        <button id="copyCsvBtn" class="btn btn-ghost" type="button" disabled>CSV</button>
+        <button id="copyJsonBtn" class="btn btn-ghost" type="button" disabled>JSON</button>
       </div>
     </section>
 
-    <p id="statusMsg" class="status hidden"></p>
+    <p id="statusMsg" class="toast hidden"></p>
   </div>
   <script type="module" src="popup.js"></script>
 </body>

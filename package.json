@@ -1,6 +1,3 @@
 {
-  "type": "module",
-  "dependencies": {
-    "tesseract.js": "^5.1.1"
-  }
+  "type": "module"
 }

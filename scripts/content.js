@@ -334,7 +334,10 @@
         n === "email" ||
         n === "phone" ||
         n === "contact" ||
-        n.includes("email")
+        n.includes("email") ||
+        n.includes("site") ||
+        n.includes("url") ||
+        n.includes("linkedin")
       );
     });
   }
@@ -708,7 +711,7 @@
 
   const SOURCE_LABELS = {
     "google-sheets": "Google Sheets",
-    "google-sheets-ocr": "Google Sheets (OCR)",
+    "google-sheets-ocr": "MailMiner OCR",
     "html-table": "HTML Table",
     "dom-scrape": "DOM Scrape",
     "plain-text": "Plain Text",

@@ -4,14 +4,21 @@ import {
   buildOutputJson,
   buildMergedOutput,
   extractEmailsFromText,
+  extractTrustworthyEmails,
   getUniqueEmails,
   getPreviewTable,
   limitEmailList,
   parseColumnConfig,
+  applyColumnMap,
+  rowLooksLikeHeader,
+  normalizeHeader,
   splitDelimitedLine,
-  normalizeColumnsFromRows,
 } from "../scripts/csv.js";
 import { runOcrScan } from "../scripts/ocr-scan.js";
+import {
+  VALIDATION_BATCH_SIZE,
+  VALIDATION_EMAILS_PER_SEC,
+} from "../scripts/config.js";
 
 const STORAGE_KEY = "emailValidatorSettings";
 
@@ -44,7 +51,8 @@ const columnConfigInput = document.getElementById("columnConfig");
 const usePasteBtn = document.getElementById("usePasteBtn");
 const clearPasteBtn = document.getElementById("clearPasteBtn");
 const resultFilter = document.getElementById("resultFilter");
-const ocrSaveImagesCheckbox = document.getElementById("ocrSaveImages");
+const themeToggle = document.getElementById("themeToggle");
+const root = document.documentElement;
 
 let scannedData = null;
 let lastExportPayload = { txt: "", csv: "", json: "" };
@@ -92,8 +100,13 @@ function getSettings() {
     exportJson: exportJsonCheckbox.checked,
     deliveryDownload: deliveryDownloadCheckbox.checked,
     deliveryCopy: deliveryCopyCheckbox.checked,
-    ocrSaveImages: ocrSaveImagesCheckbox?.checked ?? false,
+    theme: root.getAttribute("data-theme") === "dark" ? "dark" : "light",
   };
+}
+
+function applyTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  root.setAttribute("data-theme", next);
 }
 
 async function loadSettings() {
@@ -110,8 +123,8 @@ async function loadSettings() {
     if (typeof s.deliveryCopy === "boolean") {
       deliveryCopyCheckbox.checked = s.deliveryCopy;
     }
-    if (typeof s.ocrSaveImages === "boolean" && ocrSaveImagesCheckbox) {
-      ocrSaveImagesCheckbox.checked = s.ocrSaveImages;
+    if (s.theme === "dark" || s.theme === "light") {
+      applyTheme(s.theme);
     }
   } catch {
     /* ignore */
@@ -128,7 +141,6 @@ for (const el of [
   exportJsonCheckbox,
   deliveryDownloadCheckbox,
   deliveryCopyCheckbox,
-  ocrSaveImagesCheckbox,
 ]) {
   if (!el) continue;
   el.addEventListener("change", () => {
@@ -180,16 +192,37 @@ function usePastedInput() {
   const columnConfig = parseColumnConfig(columnConfigInput.value);
   let parsedRows = null;
 
+  function mapJsonObjects(items) {
+    const headers =
+      columnConfig.length > 0
+        ? columnConfig
+        : Array.from(new Set(items.flatMap((item) => Object.keys(item || {}))));
+    return [
+      headers,
+      ...items.map((item) =>
+        headers.map((header) => {
+          const key = Object.keys(item || {}).find(
+            (k) => normalizeHeader(k) === normalizeHeader(header)
+          );
+          return String(key ? item[key] : "");
+        })
+      ),
+    ];
+  }
+
   try {
     const json = JSON.parse(raw);
     if (Array.isArray(json) && json.length > 0) {
       if (typeof json[0] === "object" && !Array.isArray(json[0])) {
-        const headers = columnConfig.length > 0
-          ? columnConfig
-          : Array.from(new Set(json.flatMap((item) => Object.keys(item || {}))));
-        parsedRows = [headers, ...json.map((item) => headers.map((header) => String(item?.[header] ?? item?.[header.toLowerCase()] ?? "")) )];
+        parsedRows = mapJsonObjects(json);
       } else if (Array.isArray(json[0])) {
-        parsedRows = json.map((row) => row.map((cell) => String(cell ?? "")));
+        parsedRows =
+          columnConfig.length > 0
+            ? applyColumnMap(
+                json.map((row) => row.map((cell) => String(cell ?? ""))),
+                columnConfig
+              )
+            : json.map((row) => row.map((cell) => String(cell ?? "")));
       }
     }
   } catch {
@@ -209,19 +242,21 @@ function usePastedInput() {
 
     const rows = lines.map((line) => splitDelimitedLine(line));
 
-    if (lines.length === 1) {
-      const inlineEmails = extractEmailsFromText(lines[0]);
+    if (lines.length === 1 && columnConfig.length <= 1) {
+      const inlineEmails = extractTrustworthyEmails(lines[0]);
       if (inlineEmails.length > 0) {
-        parsedRows = [["email"], ...inlineEmails.map((email) => [email])];
+        const header = columnConfig[0] || "email";
+        parsedRows = [[header], ...inlineEmails.map((email) => [email])];
       }
     }
 
     if (!parsedRows) {
-      const configuredCols = columnConfig.length > 0 ? columnConfig : [];
-      const looksLikeHeader = rows.length > 1 && rows[0].some((cell) => /[a-zA-Z]/.test(String(cell || "")));
-      parsedRows = looksLikeHeader
-        ? normalizeColumnsFromRows(rows, configuredCols)
-        : [["email"], ...rows];
+      parsedRows =
+        columnConfig.length > 0
+          ? applyColumnMap(rows, columnConfig)
+          : rows.length > 1 && rowLooksLikeHeader(rows[0])
+            ? rows
+            : applyColumnMap(rows, ["email"]);
     }
   }
 
@@ -235,7 +270,7 @@ function usePastedInput() {
 
   const extractedData = {
     source: "pasted-input",
-    sourceLabel: "Pasted Input",
+    sourceLabel: "MailMiner Paste",
     headers,
     rows: dataRows,
   };
@@ -271,7 +306,7 @@ async function copyText(text) {
 
 function showStatus(message, type = "info") {
   statusMsg.textContent = message;
-  statusMsg.className = `status ${type}`;
+  statusMsg.className = `toast ${type}`;
   statusMsg.classList.remove("hidden");
 }
 
@@ -341,7 +376,8 @@ chrome.runtime.onMessage.addListener((message) => {
     progressText.textContent = `${completed} / ${total} validated`;
   }
   if (message.type === "VALIDATION_BATCH") {
-    batchText.textContent = `Batch ${message.batchIndex} / ${message.batchCount}`;
+    const rate = message.emailsPerSec || VALIDATION_EMAILS_PER_SEC;
+    batchText.textContent = `Batch ${message.batchIndex} / ${message.batchCount} · ${rate}/sec`;
   }
 });
 
@@ -408,8 +444,31 @@ function isGoogleSheetsUrl(url) {
   );
 }
 
+function applyColumnMapToScanData(data) {
+  const columnConfig = parseColumnConfig(columnConfigInput.value.trim());
+  if (!columnConfig.length || !data?.headers?.length) return data;
+
+  const mapped = applyColumnMap([data.headers, ...data.rows], columnConfig);
+  if (mapped.length < 2) return data;
+
+  const headers = mapped[0];
+  const rows = mapped
+    .slice(1)
+    .filter((row) => row.some((cell) => String(cell || "").trim()));
+  if (!rows.length) return data;
+
+  const emails = getUniqueEmails({ ...data, headers, rows });
+  return {
+    ...data,
+    headers,
+    rows,
+    emailCount: emails.length,
+    rowCount: rows.length,
+  };
+}
+
 function applyScanResult(scanResult) {
-  scannedData = scanResult.data;
+  scannedData = applyColumnMapToScanData(scanResult.data);
   sourceLabel.textContent = scannedData.sourceLabel;
   rowCount.textContent = String(scannedData.rowCount);
   emailCount.textContent = String(scannedData.emailCount);
@@ -431,7 +490,7 @@ scanBtn.addEventListener("click", async () => {
   clearPageResults();
   validateBtn.disabled = true;
   scanBtn.disabled = true;
-  scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#8987;</span> Scanning...';
+  scanBtn.textContent = "Scanning…";
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -447,21 +506,22 @@ scanBtn.addEventListener("click", async () => {
 
     let scanResult = await waitForScanResult(tab.id);
 
-    const weakSource = ["plain-text", "dom-scrape"].includes(scanResult?.data?.source);
+    const domSource = scanResult?.data?.source;
+    const domEmails = scanResult?.data?.emailCount ?? 0;
+    const strongDomSource = domSource === "google-sheets" || domSource === "html-table";
     const needsOcr =
       isGoogleSheetsUrl(tab.url) &&
-      (!scanResult?.success || (scanResult.data?.emailCount ?? 0) === 0 || weakSource);
+      (!scanResult?.success ||
+        domEmails === 0 ||
+        (!strongDomSource && ["plain-text", "dom-scrape"].includes(domSource)));
 
     if (needsOcr) {
       showStatus("DOM scan found no emails. Trying screenshot OCR…", "info");
-      scanBtn.innerHTML =
-        '<span class="btn-icon" aria-hidden="true">&#8987;</span> Capturing sheet…';
+      scanBtn.textContent = "Capturing sheet…";
       try {
-        const settings = getSettings();
         scanResult = await runOcrScan(tab.id, {
-          saveImages: settings.ocrSaveImages,
           onStatus: (message) => {
-            scanBtn.innerHTML = `<span class="btn-icon" aria-hidden="true">&#8987;</span> ${message}`;
+            scanBtn.textContent = message;
             showStatus(message, "info");
           },
         });
@@ -493,7 +553,7 @@ scanBtn.addEventListener("click", async () => {
     showStatus(`Scan failed: ${err.message}`, "error");
   } finally {
     scanBtn.disabled = false;
-    scanBtn.innerHTML = '<span class="btn-icon" aria-hidden="true">&#128269;</span> Scan Current Page';
+    scanBtn.textContent = "Scan current page";
   }
 });
 
@@ -537,7 +597,10 @@ validateBtn.addEventListener("click", async () => {
     const response = await chrome.runtime.sendMessage({
       type: "VALIDATE_EMAILS",
       emails,
-      options: { batchSize: 0, concurrency: 1000 },
+      options: {
+        batchSize: VALIDATION_BATCH_SIZE,
+        emailsPerSec: VALIDATION_EMAILS_PER_SEC,
+      },
     });
 
     if (!response?.success) {
@@ -576,8 +639,8 @@ validateBtn.addEventListener("click", async () => {
       const json = buildOutputJson(extractedData, validationMap, {
         totalEmailsFound: allEmails.length,
         emailsValidated: emails.length,
-        batchSize: 0,
-        concurrency: 1000,
+        batchSize: VALIDATION_BATCH_SIZE,
+        emailsPerSec: VALIDATION_EMAILS_PER_SEC,
       });
       payload.json = json;
       if (settings.deliveryDownload) {
@@ -653,6 +716,12 @@ copyTxtBtn.addEventListener("click", async () => {
   } catch (err) {
     showStatus(`Copy failed: ${err.message}`, "error");
   }
+});
+
+themeToggle?.addEventListener("click", () => {
+  const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  applyTheme(next);
+  saveSettings();
 });
 
 loadSettings();

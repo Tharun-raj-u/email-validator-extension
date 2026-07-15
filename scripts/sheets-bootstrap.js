@@ -94,6 +94,48 @@
     return null;
   }
 
+  function cellHasEmail(value) {
+    return (
+      typeof value === "string" &&
+      /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(value)
+    );
+  }
+
+  function rowHasHeaderKeywords(row) {
+    if (!Array.isArray(row)) return false;
+    return row.some((cell) => {
+      const n = String(cell || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      return (
+        n.includes("email") ||
+        n.includes("site") ||
+        n === "name" ||
+        n.includes("url") ||
+        n.includes("linkedin") ||
+        n.includes("phone")
+      );
+    });
+  }
+
+  function scoreColumnCount(values, numCols) {
+    if (numCols < 2 || values.length % numCols !== 0) return -1;
+    const rows = [];
+    for (let i = 0; i < values.length; i += numCols) {
+      rows.push(values.slice(i, i + numCols));
+    }
+    const dataRows = rows.length > 1 ? rows.slice(1) : rows;
+    let bestEmailHits = 0;
+    for (let c = 0; c < numCols; c++) {
+      const hits = dataRows.filter((r) => cellHasEmail(r[c])).length;
+      if (hits > bestEmailHits) bestEmailHits = hits;
+    }
+    const ratio = dataRows.length ? bestEmailHits / dataRows.length : 0;
+    let score = ratio * 100;
+    if (rows.length > 0 && rowHasHeaderKeywords(rows[0])) score += 40;
+    return score;
+  }
+
   function getColumnCount(meta, cellsFlat, values) {
     if (Array.isArray(meta) && meta.length >= 5 && typeof meta[4] === "number" && meta[4] > 0) {
       return meta[4];
@@ -101,10 +143,16 @@
     if (Array.isArray(meta) && meta.length >= 4 && typeof meta[3] === "number" && meta[3] > 0) {
       return meta[3];
     }
-    for (const n of [3, 4, 5, 6, 8, 10]) {
-      if (values.length % n === 0 && n >= 2) return n;
+    let bestN = 3;
+    let bestScore = -1;
+    for (const n of [4, 5, 6, 3, 8, 10, 12, 7, 9, 11]) {
+      const score = scoreColumnCount(values, n);
+      if (score > bestScore) {
+        bestScore = score;
+        bestN = n;
+      }
     }
-    return 3;
+    return bestN;
   }
 
   function parseBootstrapData(bootstrapData, expectedGridId) {

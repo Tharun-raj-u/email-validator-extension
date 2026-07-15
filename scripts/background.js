@@ -1,24 +1,35 @@
 import { validateEmails } from "./validator.js";
-import { OCR_API_URL, OCR_SPACE_API_KEY } from "./config.js";
+import { OCR_API_URL } from "./config.js";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "OCR_REQUEST") {
-    // Fetch is done here (background service worker) to bypass CORS restrictions.
     const dataUrl = message.dataUrl;
     fetch(dataUrl)
       .then((r) => r.blob())
       .then((blob) => {
         const formData = new FormData();
-        formData.append("file", blob, "capture.png");
-        return fetch(OCR_API_URL, { method: "POST", body: formData, referrerPolicy: "no-referrer" });
+        formData.append("image", blob, "capture.png");
+        return fetch(OCR_API_URL, {
+          method: "POST",
+          body: formData,
+          referrerPolicy: "no-referrer",
+        });
       })
-      .then((r) => {
-        if (!r.ok) throw new Error(`OCR worker failed: HTTP ${r.status}`);
-        return r.json();
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`OCR worker failed: HTTP ${response.status}`);
+        }
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const json = await response.json();
+          return typeof json === "string"
+            ? json
+            : json.text || json.result || "";
+        }
+        return response.text();
       })
-      .then((json) => {
-        const text = typeof json === "string" ? json : (json.text || json.result || "");
-        sendResponse({ success: true, text });
+      .then((text) => {
+        sendResponse({ success: true, text: text || "" });
       })
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -36,14 +47,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }).catch(() => {});
       },
       {
-        concurrency: options.concurrency,
         batchSize: options.batchSize,
-        onBatch: (batchIndex, batchCount, batchLength) => {
+        emailsPerSec: options.emailsPerSec,
+        onBatch: (batchIndex, batchCount, batchLength, meta) => {
           chrome.runtime.sendMessage({
             type: "VALIDATION_BATCH",
             batchIndex,
             batchCount,
             batchLength,
+            emailsPerSec: meta?.emailsPerSec,
           }).catch(() => {});
         },
       }
