@@ -4,6 +4,12 @@
 
 import { withValidToken } from "./auth-service.js";
 import {
+  SHEETS_API_BASE,
+  DEFAULT_SPREADSHEET_TITLE,
+  DEFAULT_WORKSHEET_NAME,
+  spreadsheetDocUrl,
+} from "./config.js";
+import {
   findEmailColumnIndex,
   getUniqueEmails,
   extractEmailCandidateFromCell,
@@ -12,10 +18,9 @@ import {
   extractTrustworthyEmails,
 } from "./csv.js";
 
-export const DEFAULT_SPREADSHEET_TITLE = "MailMiner Results";
-export const DEFAULT_WORKSHEET_NAME = "Results";
+export { DEFAULT_SPREADSHEET_TITLE, DEFAULT_WORKSHEET_NAME };
 
-const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
+const SHEETS_API = SHEETS_API_BASE;
 
 /**
  * @param {string} urlOrId
@@ -225,7 +230,7 @@ export async function createBlankSheetWithValues(spreadsheetId, title, values) {
     spreadsheetId,
     spreadsheetTitle: meta?.properties?.title || "",
     worksheetName: finalTitle,
-    spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
+    spreadsheetUrl: spreadsheetDocUrl(spreadsheetId),
     updatedRows: Math.max(0, values.length - 1),
   };
 }
@@ -279,7 +284,7 @@ export async function createSpreadsheetWithTable(headers, rows, title = DEFAULT_
     spreadsheetId,
     spreadsheetTitle: title,
     worksheetName: DEFAULT_WORKSHEET_NAME,
-    spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
+    spreadsheetUrl: spreadsheetDocUrl(spreadsheetId),
     updatedRows: paddedRows.length,
   };
 }
@@ -561,6 +566,6 @@ export async function writeValidationColumn(opts = {}) {
     validColIdx,
     updatedRows: filled,
     invalidCount,
-    spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
+    spreadsheetUrl: spreadsheetDocUrl(spreadsheetId),
   };
 }

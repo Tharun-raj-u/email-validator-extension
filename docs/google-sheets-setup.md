@@ -1,8 +1,8 @@
 # Google Sheets setup for MailMiner
 
-MailMiner uses the Chrome Identity API (`chrome.identity.getAuthToken`) with an OAuth 2.0 **Chrome Extension** client. No client secret is used or stored.
-
-For the full product overview, see the main [README](../README.md).
+MailMiner signs in with `chrome.identity.launchWebAuthFlow` (Google account picker).
+The redirect URI is `https://<extension-id>.chromiumapp.org/` (from `chrome.identity.getRedirectURL()`).
+No client secret is stored.
 
 On a Google Sheets tab, MailMiner can:
 
@@ -39,17 +39,22 @@ In **APIs & Services → Library**, enable:
 
 1. Go to **APIs & Services → Credentials → Create credentials → OAuth client ID**.  
 2. Application type: **Chrome Extension**.  
-3. **Item ID**: your extension ID from `chrome://extensions` (Developer mode → Load unpacked → copy the ID).  
+3. **Item ID**: your extension ID from `chrome://extensions` (must match exactly — required for the account picker redirect).  
 4. Create the client and copy the **Client ID**.  
-5. Put that Client ID in `manifest.json` under `oauth2.client_id`.
+5. Put the **Chrome Extension** Client ID in `manifest.json` → `oauth2.client_id`, and the **Web application** Client ID (account picker) in `scripts/config.json` → `googleOauthClientId`.
 
-If you reload an unpacked build and the ID changes, update the Item ID in Google Cloud to match.
+If you reload an unpacked build and the extension ID changes, update the **Item ID** in Google Cloud to match.
+
+### Error 400: redirect_uri_mismatch
+
+This means the OAuth client’s **Item ID** does not equal the loaded extension’s ID.  
+Copy the ID from `chrome://extensions`, paste it as Item ID, save, reload MailMiner, sign in again.
 
 ## 5. Load and test
 
 1. Open `chrome://extensions` → **Load unpacked** → select the repo folder (the one with `manifest.json`).  
-2. Confirm the extension ID matches the OAuth client Item ID.  
-3. Open **MailMiner** → **Sign in** (or Settings) and approve Sheets access.  
+2. Confirm the extension ID matches the OAuth client **Item ID**.  
+3. Open the MailMiner **popup** → **Sign in** → **Continue with Google** → pick an account.  
 4. Open a Google Sheet that has an email column.  
 5. Click **Scan current page** → **Validate & export**.  
 6. With **Update current sheet** checked, refresh the sheet — a **Valid** column should appear beside the emails.  
@@ -59,23 +64,23 @@ If you reload an unpacked build and the ID changes, update the Item ID in Google
 
 1. Enable **Google Sheets API** and **Google Drive API** in the same Cloud project as your OAuth client.  
 2. OAuth consent screen → if status is **Testing**, add your Google account under **Test users**.  
-3. Sign out → sign in again so Chrome re-grants Sheets scopes.  
+3. Sign out → sign in again from the popup.  
 4. Confirm the OAuth Chrome Extension client's **Item ID** equals your extension ID.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |--------|-----|
-| Sign-in cancelled | User closed the consent dialog; try again. |
-| Bad client / OAuth error | Extension ID in Cloud Console must match the loaded extension. |
-| Session expired | Sign out and sign in again. |
+| redirect_uri_mismatch | Set Cloud Console Item ID = extension ID from chrome://extensions. |
+| Sign-in cancelled | User closed the Google window; try again. |
+| Bad client / OAuth error | Client ID in manifest.json / config must match Cloud Console. |
+| Session expired | Sign out and sign in again from the popup. |
 | Access denied / API not enabled | Enable Sheets + Drive APIs; sign out/in. |
-| Missing Google permission | Sign out/in and approve all scopes. |
 | No emails found | Ensure the active worksheet has an email column with data. |
 | Cannot write Valid column | Need **Editor** access; or use **New spreadsheet** / **New blank sheet** instead. |
 
 ## Security notes
 
 - Never put a client secret in the extension.  
-- Access tokens are cached by Chrome Identity; MailMiner only stores the account profile (name, email, picture) in `chrome.storage.local`.  
-- Do not commit `scripts/config.local.js` if it contains private endpoints or keys.
+- MailMiner stores the access token and profile in `chrome.storage.local` after picker sign-in.  
+- Do not commit `scripts/config.local.json` if it contains private endpoints or keys.

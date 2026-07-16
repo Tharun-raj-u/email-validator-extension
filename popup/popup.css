@@ -349,6 +349,17 @@ body {
   accent-color: var(--accent);
 }
 
+.sheets-delivery {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.sheets-delivery.hidden {
+  display: none;
+}
+
 .btn {
   border: 1px solid transparent;
   border-radius: 8px;

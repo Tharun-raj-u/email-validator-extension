@@ -1,2 +1,3 @@
 node_modules/
 scripts/config.local.js
+scripts/config.local.json

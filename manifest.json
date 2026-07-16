@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MailMiner",
-  "version": "1.6.0",
+  "version": "1.7.4",
   "description": "MailMiner — extract, validate, and export emails from sheets, paste, and OCR.",
   "permissions": ["activeTab", "scripting", "storage", "identity"],
   "host_permissions": [
@@ -9,7 +9,8 @@
     "https://docs.google.com/*",
     "https://hackathon-ocr-worker-3.dygkh7.easypanel.host/*",
     "https://www.googleapis.com/*",
-    "https://accounts.google.com/*"
+    "https://accounts.google.com/*",
+    "https://oauth2.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "927778397565-u9t68i0vf8l7hj4pt0qk9qaif7vakgj7.apps.googleusercontent.com",

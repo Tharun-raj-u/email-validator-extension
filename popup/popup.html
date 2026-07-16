@@ -42,11 +42,9 @@
         </div>
       </div>
       <div class="account-strip-actions">
-        <button id="accountSignInBtn" class="btn btn-ghost btn-small" type="button">Sign in</button>
-        <button id="openSettingsBtn" class="btn btn-ghost btn-small" type="button">Settings</button>
+        <button id="accountAuthBtn" class="btn btn-ghost btn-small" type="button">Sign in</button>
       </div>
     </section>
-
     <section class="panel">
       <div class="panel-head">
         <span>Paste data</span>
@@ -75,9 +73,11 @@
           <legend>Delivery</legend>
           <label class="toggle"><input type="checkbox" id="deliveryDownload" checked /><span>Download</span></label>
           <label class="toggle"><input type="checkbox" id="deliveryCopy" /><span>Copy</span></label>
-          <label class="toggle"><input type="checkbox" id="deliveryNewSpreadsheet" /><span>New spreadsheet</span></label>
-          <label class="toggle"><input type="checkbox" id="deliveryNewBlankSheet" /><span>New blank sheet</span></label>
-          <label class="toggle"><input type="checkbox" id="deliveryUpdateCurrentSheet" /><span>Update current sheet</span></label>
+          <div id="sheetsDeliveryOptions" class="sheets-delivery hidden">
+            <label class="toggle"><input type="checkbox" id="deliveryNewSpreadsheet" /><span>New spreadsheet</span></label>
+            <label class="toggle"><input type="checkbox" id="deliveryNewBlankSheet" /><span>New blank sheet</span></label>
+            <label class="toggle"><input type="checkbox" id="deliveryUpdateCurrentSheet" /><span>Update current sheet</span></label>
+          </div>
         </fieldset>
       </div>
     </section>

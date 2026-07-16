@@ -1,10 +1,41 @@
 /**
- * Google OAuth via chrome.identity.
- * Access tokens stay in Chrome's Identity cache — only the profile is persisted.
+ * Google OAuth with account picker (launchWebAuthFlow).
+ * Redirect URI is built from chrome.runtime.id via getRedirectURL().
+ * Prefer running signIn() from the service worker (popup → GOOGLE_SIGN_IN)
+ * so the popup closing does not cancel the Google window.
  */
 
+import {
+  GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_USERINFO_URL,
+  GOOGLE_OAUTH_AUTH_URL,
+  GOOGLE_OAUTH_REVOKE_URL,
+  SIGN_IN_TIMEOUT_MS,
+} from "./config.js";
+
 const PROFILE_KEY = "googleAuthProfile";
-const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
+const TOKEN_KEY = "googleAccessToken";
+const SIGNED_OUT_KEY = "googleAuthUserSignedOut";
+
+export function getExtensionId() {
+  return chrome.runtime.id;
+}
+
+export function getOAuthRedirectUri() {
+  return chrome.identity.getRedirectURL();
+}
+
+/**
+ * Client ID for launchWebAuthFlow only (from config.json).
+ * Do NOT fall back to manifestoAuth Chrome Extension client — that causes redirect_uri_mismatch.
+ */
+export function getConfiguredClientId() {
+  return String(GOOGLE_OAUTH_CLIENT_ID || "").trim();
+}
+
+function getOAuthScopes() {
+  return chrome.runtime.getManifest()?.oauth2?.scopes || [];
+}
 
 function isCancelError(err) {
   const msg = String(err?.message || err || "").toLowerCase();
@@ -12,57 +43,226 @@ function isCancelError(err) {
     msg.includes("canceled") ||
     msg.includes("cancelled") ||
     msg.includes("the user did not approve") ||
-    msg.includes("authorization page could not be loaded")
+    msg.includes("authorization page could not be loaded") ||
+    msg.includes("timed out")
   );
 }
 
 function normalizeAuthError(err) {
+  const raw = String(err?.message || err || "Authentication failed.");
+  const lower = raw.toLowerCase();
+
+  if (lower.includes("redirect_uri")) {
+    const id = getExtensionId();
+    const redirect = getOAuthRedirectUri();
+    const err = new Error(
+      `Google rejected the redirect URI (Error 400: redirect_uri_mismatch). ` +
+        `Fix Cloud Console for client ${getConfiguredClientId()}: ` +
+        `(1) Chrome Extension type → set Item ID to “${id}”, OR ` +
+        `(2) create a Web application client and add Authorized redirect URI: ${redirect} — then put that Web Client ID in config.json as googleOauthClientId.`
+    );
+    err.code = "REDIRECT_URI_MISMATCH";
+    err.extensionId = id;
+    err.redirectUri = redirect;
+    return err;
+  }
+
   if (isCancelError(err)) {
+    if (/timed out/i.test(raw)) {
+      return new Error(
+        "Sign-in timed out. Check for a Google window behind Chrome, then try again."
+      );
+    }
     return new Error("Sign-in was cancelled.");
   }
-  const msg = String(err?.message || err || "Authentication failed.");
-  if (msg.toLowerCase().includes("oauth2") || msg.toLowerCase().includes("bad client")) {
+
+
+  if (lower.includes("access_denied") || lower.includes("access denied")) {
     return new Error(
-      "OAuth is not configured correctly. Check the Client ID and extension ID in Google Cloud Console."
+      "Google blocked sign-in. Add your Gmail under OAuth consent screen → Test users."
     );
   }
-  return new Error(msg);
+  if (lower.includes("oauth2") || lower.includes("bad client")) {
+    return new Error(
+      "OAuth is misconfigured. Check Client ID in config.json and manifest.json."
+    );
+  }
+  return new Error(raw);
 }
 
-/**
- * @param {{ interactive?: boolean }} [options]
- * @returns {Promise<string>}
- */
-export async function getAccessToken(options = {}) {
-  const interactive = options.interactive !== false;
+async function isUserSignedOut() {
   try {
-    const result = await chrome.identity.getAuthToken({ interactive });
-    const token = typeof result === "string" ? result : result?.token;
-    if (!token) {
-      throw new Error(interactive ? "Sign-in was cancelled." : "Not signed in.");
-    }
-    return token;
-  } catch (err) {
-    throw normalizeAuthError(err);
+    const stored = await chrome.storage.local.get(SIGNED_OUT_KEY);
+    return stored[SIGNED_OUT_KEY] === true;
+  } catch {
+    return false;
   }
 }
 
-/**
- * @param {string} token
- */
-export async function removeCachedToken(token) {
+async function setUserSignedOut(signedOut) {
+  await chrome.storage.local.set({ [SIGNED_OUT_KEY]: Boolean(signedOut) });
+}
+
+async function saveAccessToken(token) {
+  if (!token) {
+    await chrome.storage.local.remove(TOKEN_KEY);
+    return;
+  }
+  await chrome.storage.local.set({ [TOKEN_KEY]: token });
+}
+
+async function readAccessToken() {
+  try {
+    const stored = await chrome.storage.local.get(TOKEN_KEY);
+    return stored[TOKEN_KEY] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function revokeGoogleToken(token) {
   if (!token) return;
   try {
-    await chrome.identity.removeCachedAuthToken({ token });
+    await fetch(
+      `${GOOGLE_OAUTH_REVOKE_URL}?token=${encodeURIComponent(token)}`,
+      { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
   } catch {
     /* ignore */
   }
+  if (typeof chrome.identity.removeCachedAuthToken === "function") {
+    try {
+      await chrome.identity.removeCachedAuthToken({ token });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function clearIdentityCache() {
+  if (typeof chrome.identity.clearAllCachedAuthTokens === "function") {
+    try {
+      await chrome.identity.clearAllCachedAuthTokens();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Drop stored Sheets/OAuth session so nothing uses a cached token while signed out. */
+async function clearSession({ revoke = true, signedOut = true } = {}) {
+  const token = revoke ? await readAccessToken() : null;
+  if (revoke && token) {
+    await revokeGoogleToken(token);
+  }
+  await saveAccessToken(null);
+  await saveProfile(null);
+  await setUserSignedOut(signedOut);
+  await clearIdentityCache();
+}
+
+/**
+ * Google account picker. First await in a click handler.
+ * @returns {Promise<string>}
+ */
+function launchAccountPickerAuth() {
+  const clientId = getConfiguredClientId();
+  const scopes = getOAuthScopes();
+  if (!clientId || !scopes.length) {
+    return Promise.reject(
+      new Error("Missing OAuth client ID or scopes (config.json / manifest.json).")
+    );
+  }
+
+  const redirectUri = getOAuthRedirectUri();
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: "token",
+    redirect_uri: redirectUri,
+    scope: scopes.join(" "),
+    prompt: "select_account consent",
+    include_granted_scopes: "true",
+  });
+
+  const authUrl = `${GOOGLE_OAUTH_AUTH_URL}?${params.toString()}`;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Sign-in timed out."));
+    }, SIGN_IN_TIMEOUT_MS);
+
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, (responseUrl) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+
+      const errMsg = chrome.runtime.lastError?.message;
+      if (errMsg) {
+        reject(new Error(errMsg));
+        return;
+      }
+      if (!responseUrl) {
+        reject(new Error("Sign-in was cancelled."));
+        return;
+      }
+
+      try {
+        const hash = responseUrl.includes("#")
+          ? responseUrl.slice(responseUrl.indexOf("#") + 1)
+          : "";
+        const query = responseUrl.includes("?")
+          ? responseUrl.slice(responseUrl.indexOf("?") + 1).split("#")[0]
+          : "";
+        const data = new URLSearchParams(hash || query);
+        const token = data.get("access_token");
+        const oauthError = data.get("error_description") || data.get("error");
+        if (oauthError) {
+          reject(new Error(String(oauthError)));
+          return;
+        }
+        if (!token) {
+          reject(new Error("Sign-in failed. No access token returned."));
+          return;
+        }
+        resolve(token);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
+ * Only the token from an explicit Sign in (never Chrome identity cache alone).
+ * Requires both a stored token and profile, and a non–signed-out session.
+ */
+export async function getAccessToken() {
+  if (await isUserSignedOut()) {
+    await clearSession({ revoke: false, signedOut: true });
+    throw new Error("Not signed in. Click Sign in to choose a Google account.");
+  }
+
+  const profile = await getStoredProfile();
+  const stored = await readAccessToken();
+  if (!profile || !stored) {
+    await clearSession({ revoke: Boolean(stored), signedOut: true });
+    throw new Error("Not signed in. Click Sign in to choose a Google account.");
+  }
+
+  return stored;
+}
+
+export async function removeCachedToken(_token) {
+  await saveAccessToken(null);
 }
 
 async function fetchUserInfo(token) {
   let response;
   try {
-    response = await fetch(USERINFO_URL, {
+    response = await fetch(GOOGLE_USERINFO_URL, {
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch {
@@ -87,9 +287,6 @@ async function fetchUserInfo(token) {
   };
 }
 
-/**
- * @returns {Promise<{ email: string, name: string, picture: string } | null>}
- */
 export async function getStoredProfile() {
   try {
     const stored = await chrome.storage.local.get(PROFILE_KEY);
@@ -99,9 +296,6 @@ export async function getStoredProfile() {
   }
 }
 
-/**
- * @param {{ email: string, name: string, picture: string } | null} profile
- */
 async function saveProfile(profile) {
   if (!profile) {
     await chrome.storage.local.remove(PROFILE_KEY);
@@ -111,70 +305,47 @@ async function saveProfile(profile) {
 }
 
 /**
- * Interactive sign-in and profile fetch.
- * Clears any cached token first so Chrome re-requests the current manifest scopes.
- * @returns {Promise<{ email: string, name: string, picture: string }>}
+ * Interactive sign-in with Google account picker.
+ * Must be called from a button click (user gesture).
  */
 export async function signIn() {
-  await signOut();
+  let token;
+  try {
+    token = await launchAccountPickerAuth();
+  } catch (err) {
+    throw normalizeAuthError(err);
+  }
 
-  const token = await getAccessToken({ interactive: true });
   try {
     const profile = await fetchUserInfo(token);
+    await saveAccessToken(token);
+    await setUserSignedOut(false);
     await saveProfile(profile);
+    await clearIdentityCache();
     return profile;
   } catch (err) {
+    await saveAccessToken(null);
     if (err?.status === 401) {
-      await removeCachedToken(token);
-      const retryToken = await getAccessToken({ interactive: true });
-      const profile = await fetchUserInfo(retryToken);
-      await saveProfile(profile);
-      return profile;
+      throw new Error("Session expired. Click Sign in again.");
     }
     throw err;
   }
 }
 
-/**
- * Clear Chrome cached tokens and stored profile.
- */
 export async function signOut() {
-  let token = null;
-  try {
-    token = await getAccessToken({ interactive: false });
-  } catch {
-    /* not signed in */
-  }
-
-  if (token) {
-    await removeCachedToken(token);
-  }
-
-  if (typeof chrome.identity.clearAllCachedAuthTokens === "function") {
-    try {
-      await chrome.identity.clearAllCachedAuthTokens();
-    } catch {
-      /* ignore */
-    }
-  }
-
-  await saveProfile(null);
+  await clearSession({ revoke: true, signedOut: true });
 }
 
 /**
- * Run an authenticated request. On 401 (and optionally insufficient-scope 403),
- * drop the cached token and retry once with an interactive login.
  * @template T
  * @param {(token: string) => Promise<{ response: Response, data?: T } | Response>} fn
  * @param {{ interactive?: boolean, retryInsufficientScopes?: boolean }} [options]
- * @returns {Promise<T | unknown>}
  */
 export async function withValidToken(fn, options = {}) {
-  const interactive = options.interactive === true;
   const retryInsufficientScopes = options.retryInsufficientScopes === true;
-  let token = await getAccessToken({ interactive });
+  const token = await getAccessToken();
 
-  async function attempt(currentToken, isRetry) {
+  async function attempt(currentToken) {
     let result;
     try {
       result = await fn(currentToken);
@@ -184,34 +355,19 @@ export async function withValidToken(fn, options = {}) {
       }
       if (
         retryInsufficientScopes &&
-        !isRetry &&
         (err?.code === "INSUFFICIENT_SCOPES" ||
           /missing google permission|insufficient|scope/i.test(String(err?.message || "")))
       ) {
-        await removeCachedToken(currentToken);
-        if (typeof chrome.identity.clearAllCachedAuthTokens === "function") {
-          try {
-            await chrome.identity.clearAllCachedAuthTokens();
-          } catch {
-            /* ignore */
-          }
-        }
-        const fresh = await getAccessToken({ interactive: true });
-        return attempt(fresh, true);
+        await clearSession({ revoke: true, signedOut: true });
+        throw new Error("Missing Google permission. Sign in again.");
       }
       throw err;
     }
 
     const response = result?.response ?? result;
-    if (response?.status === 401 && !isRetry) {
-      await removeCachedToken(currentToken);
-      const fresh = await getAccessToken({ interactive: true });
-      return attempt(fresh, true);
-    }
-
     if (response?.status === 401) {
-      await saveProfile(null);
-      throw new Error("Session expired. Please sign in again.");
+      await clearSession({ revoke: true, signedOut: true });
+      throw new Error("Session expired. Sign in again.");
     }
 
     if (result && typeof result === "object" && "data" in result) {
@@ -220,35 +376,28 @@ export async function withValidToken(fn, options = {}) {
     return result;
   }
 
-  return attempt(token, false);
+  return attempt(token);
 }
 
-/**
- * Auth status for UI: stored profile plus a non-interactive token check.
- */
 export async function getAuthStatus() {
-  let profile = await getStoredProfile();
-  let signedIn = false;
-  try {
-    await getAccessToken({ interactive: false });
-    signedIn = true;
-  } catch {
-    signedIn = false;
-  }
-
-  if (!signedIn) {
-    if (profile) await saveProfile(null);
+  if (await isUserSignedOut()) {
+    // Wipe leftover token/profile so Sheets cannot use a cached session.
+    const leftover = await readAccessToken();
+    if (leftover || (await getStoredProfile())) {
+      await clearSession({ revoke: Boolean(leftover), signedOut: true });
+    }
     return { signedIn: false, profile: null };
   }
 
-  if (!profile) {
-    try {
-      const token = await getAccessToken({ interactive: false });
-      profile = await fetchUserInfo(token);
-      await saveProfile(profile);
-    } catch {
-      return { signedIn: false, profile: null };
+  const profile = await getStoredProfile();
+  const token = await readAccessToken();
+  if (!profile || !token) {
+    if (profile || token) {
+      await clearSession({ revoke: Boolean(token), signedOut: true });
+    } else {
+      await setUserSignedOut(true);
     }
+    return { signedIn: false, profile: null };
   }
 
   return { signedIn: true, profile };

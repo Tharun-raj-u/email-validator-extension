@@ -2,11 +2,8 @@ import {
   VALIDATOR_API_URL,
   VALIDATION_BATCH_SIZE,
   VALIDATION_EMAILS_PER_SEC,
+  VALIDATION_INVALID_HTTP_STATUS,
 } from "./config.js";
-
-const API_URL = VALIDATOR_API_URL;
-const DEFAULT_BATCH_SIZE = Math.max(1, VALIDATION_BATCH_SIZE || 100);
-const DEFAULT_EMAILS_PER_SEC = Math.max(1, VALIDATION_EMAILS_PER_SEC || 100);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -14,13 +11,13 @@ function sleep(ms) {
 
 export async function validateEmail(email) {
   try {
-    const response = await fetch(API_URL, {
+    const response = await fetch(VALIDATOR_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
     });
 
-    if (response.status === 422) {
+    if (response.status === VALIDATION_INVALID_HTTP_STATUS) {
       return "invalid";
     }
 
@@ -36,8 +33,8 @@ export async function validateEmail(email) {
 }
 
 export async function validateEmails(emails, onProgress, options = {}) {
-  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
-  const emailsPerSec = Math.max(1, options.emailsPerSec ?? DEFAULT_EMAILS_PER_SEC);
+  const batchSize = Math.max(1, options.batchSize ?? VALIDATION_BATCH_SIZE);
+  const emailsPerSec = Math.max(1, options.emailsPerSec ?? VALIDATION_EMAILS_PER_SEC);
   const batchDelayMs = Math.ceil((batchSize / emailsPerSec) * 1000);
   const onBatch = options.onBatch;
   const cache = new Map();

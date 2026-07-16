@@ -146,17 +146,17 @@ Listens for messages such as:
 |------|------|
 | `scripts/csv.js` | Parse paste, find email columns, filter columns, build CSV/JSON |
 | `scripts/validator.js` | Batch validate emails against the remote API |
-| `scripts/config.js` | Default URLs and batch rates (optional local overrides) |
+| `scripts/config.js` | Thin loader that exports values from `config.json` |
+| `scripts/config.json` | API URLs, batch rates, OAuth web client ID |
 
 ### 7. Config (without secrets)
 
-Defaults live in `scripts/config.js`:
+Edit **`scripts/config.json`** only (URLs, batch size, OAuth web client ID, Google API bases).  
+`scripts/config.js` re-exports those values — do not hardcode settings there.
 
-- Validator: `https://validator-api.fsgarage.in/api/v1/validate/email`  
-- OCR: `https://hackathon-ocr-worker-3.dygkh7.easypanel.host/ocr`  
+`manifest.json` still needs matching `host_permissions` and `oauth2.client_id` / scopes (Chrome reads those at install time).
 
-Optional overrides: copy `scripts/config.local.example.js` → `scripts/config.local.js`  
-(`config.local.js` is gitignored and **not required** to run.)
+See `scripts/config.local.example.json` for a template. Copying to `config.local.json` is optional and **not** auto-merged — change `config.json` for deploy.
 
 ---
 
@@ -230,7 +230,8 @@ first-extension/
     ├── validator.js
     ├── ocr-scan.js / ocr-parse.js / grid-bounds.js
     ├── config.js
-    └── config.local.example.js
+    ├── config.json
+    └── config.local.example.json
 ```
 
 ---
@@ -241,7 +242,7 @@ MailMiner is already a ready-to-load extension. There is **no compile step**.
 
 ### Package a zip for Chrome Web Store or sharing
 
-1. Make sure `scripts/config.local.js` is **not** included if it has private URLs or keys (it is gitignored on purpose)  
+1. Make sure `scripts/config.local.json` is **not** included if it has private URLs or keys (it is gitignored on purpose)  
 2. Zip the project folder contents (include `manifest.json` at the root of the zip)  
 3. Exclude junk: `node_modules`, `.git`, local notes, secrets  
 
@@ -293,7 +294,7 @@ MailMiner never stores a client secret. Chrome Identity handles tokens.
 | Sheets 403 / Access denied | Enable Sheets + Drive APIs; sign out/in; check Editor rights |
 | No emails found | Need an email-like column; try OCR for image sheets |
 | Valid column empty | Turn on **Update current sheet**; confirm email column; re-validate |
-| OCR fails | Check OCR URL in `config.js` and `host_permissions` in the manifest |
+| OCR fails | Check OCR URL in `config.json` and `host_permissions` in the manifest |
 | Validate stalls | Check validator URL / network; watch status in the popup progress panel |
 
 ---
@@ -307,4 +308,4 @@ MailMiner never stores a client secret. Chrome Identity handles tokens.
 
 ## License / ownership
 
-Use and deploy under your organization rules. Do not commit API keys or private `config.local.js` content into git.
+Use and deploy under your organization rules. Do not commit API keys or private `config.local.json` content into git.

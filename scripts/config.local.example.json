@@ -1,0 +1,16 @@
+{
+  "validatorApiUrl": "api url",
+  "ocrApiUrl": "ocr api url",
+  "validationBatchSize": 100,
+  "validationEmailsPerSec": 100,
+  "validationInvalidHttpStatus": 422,
+  "googleOauthClientId": "YOUR_WEB_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+  "sheetsApiBase": "sheets api base url",
+  "googleSheetsDocBase": "google sheets doc base url",
+  "googleUserInfoUrl": "google user info url",
+  "googleOAuthAuthUrl": "google oauth auth url",
+  "googleOAuthRevokeUrl": "google oauth revoke url",
+  "signInTimeoutMs": 120000,
+  "defaultSpreadsheetTitle": "default spreadsheet title",
+  "defaultWorksheetName": "default worksheet name"
+}

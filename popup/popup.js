@@ -19,7 +19,17 @@ import { runOcrScan } from "../scripts/ocr-scan.js";
 import {
   VALIDATION_BATCH_SIZE,
   VALIDATION_EMAILS_PER_SEC,
+  spreadsheetDocUrl,
 } from "../scripts/config.js";
+import { getAuthStatus, signOut } from "../scripts/auth-service.js";
+
+async function requestGoogleSignIn() {
+  const res = await chrome.runtime.sendMessage({ type: "GOOGLE_SIGN_IN" });
+  if (!res?.success) {
+    throw new Error(res?.error || "Sign-in failed.");
+  }
+  return res.profile || null;
+}
 
 const STORAGE_KEY = "emailValidatorSettings";
 
@@ -46,12 +56,53 @@ const deliveryCopyCheckbox = document.getElementById("deliveryCopy");
 const deliveryNewSpreadsheetCheckbox = document.getElementById("deliveryNewSpreadsheet");
 const deliveryNewBlankSheetCheckbox = document.getElementById("deliveryNewBlankSheet");
 const deliveryUpdateCurrentSheetCheckbox = document.getElementById("deliveryUpdateCurrentSheet");
+const sheetsDeliveryOptions = document.getElementById("sheetsDeliveryOptions");
+
+/** True when the active tab is a Google Spreadsheet. */
+let isOnGoogleSheet = false;
+
+function isGoogleSheetsUrl(url) {
+  try {
+    const u = new URL(url || "");
+    return (
+      (u.hostname === "docs.google.com" || u.hostname === "sheets.google.com") &&
+      u.pathname.includes("/spreadsheets/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Spreadsheet delivery options only make sense on a Google Sheets tab.
+ * When hidden, those checkboxes are forced off so validate cannot use them.
+ */
+async function refreshSheetsDeliveryVisibility() {
+  let onSheet = false;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    onSheet = isGoogleSheetsUrl(tab?.url || "");
+  } catch {
+    onSheet = false;
+  }
+
+  isOnGoogleSheet = onSheet;
+
+  if (sheetsDeliveryOptions) {
+    sheetsDeliveryOptions.classList.toggle("hidden", !onSheet);
+  }
+
+  if (!onSheet) {
+    if (deliveryNewSpreadsheetCheckbox) deliveryNewSpreadsheetCheckbox.checked = false;
+    if (deliveryNewBlankSheetCheckbox) deliveryNewBlankSheetCheckbox.checked = false;
+    if (deliveryUpdateCurrentSheetCheckbox) deliveryUpdateCurrentSheetCheckbox.checked = false;
+  }
+}
 const exportValidUnknownCheckbox = document.getElementById("exportValidUnknown");
 const accountAvatar = document.getElementById("accountAvatar");
 const accountName = document.getElementById("accountName");
 const accountEmail = document.getElementById("accountEmail");
-const accountSignInBtn = document.getElementById("accountSignInBtn");
-const openSettingsBtn = document.getElementById("openSettingsBtn");
+const accountAuthBtn = document.getElementById("accountAuthBtn");
 const copyPanel = document.getElementById("copyPanel");
 const copySummary = document.getElementById("copySummary");
 const copyTxtBtn = document.getElementById("copyTxtBtn");
@@ -120,9 +171,12 @@ function getSettings() {
     exportValidUnknownOnly: exportValidUnknownCheckbox?.checked !== false,
     deliveryDownload: deliveryDownloadCheckbox.checked,
     deliveryCopy: deliveryCopyCheckbox.checked,
-    deliveryNewSpreadsheet: deliveryNewSpreadsheetCheckbox?.checked || false,
-    deliveryNewBlankSheet: deliveryNewBlankSheetCheckbox?.checked || false,
-    deliveryUpdateCurrentSheet: deliveryUpdateCurrentSheetCheckbox?.checked || false,
+    deliveryNewSpreadsheet:
+      isOnGoogleSheet && (deliveryNewSpreadsheetCheckbox?.checked || false),
+    deliveryNewBlankSheet:
+      isOnGoogleSheet && (deliveryNewBlankSheetCheckbox?.checked || false),
+    deliveryUpdateCurrentSheet:
+      isOnGoogleSheet && (deliveryUpdateCurrentSheetCheckbox?.checked || false),
     theme: root.getAttribute("data-theme") === "dark" ? "dark" : "light",
   };
 }
@@ -190,7 +244,8 @@ for (const el of [
 
 function canWriteValidColumnToCurrentSheet() {
   return Boolean(
-    deliveryUpdateCurrentSheetCheckbox?.checked &&
+    isOnGoogleSheet &&
+      deliveryUpdateCurrentSheetCheckbox?.checked &&
       scannedData?.spreadsheetId &&
       scannedData?.worksheetName
   );
@@ -200,14 +255,16 @@ function ensureDeliverySelection() {
   if (
     deliveryDownloadCheckbox.checked ||
     deliveryCopyCheckbox.checked ||
-    deliveryNewSpreadsheetCheckbox?.checked ||
-    deliveryNewBlankSheetCheckbox?.checked ||
+    (isOnGoogleSheet && deliveryNewSpreadsheetCheckbox?.checked) ||
+    (isOnGoogleSheet && deliveryNewBlankSheetCheckbox?.checked) ||
     canWriteValidColumnToCurrentSheet()
   ) {
     return true;
   }
   showStatus(
-    "Select Download, Copy, New spreadsheet, New blank sheet, or Update current sheet.",
+    isOnGoogleSheet
+      ? "Select Download, Copy, New spreadsheet, New blank sheet, or Update current sheet."
+      : "Select Download or Copy (open a Google Sheet for spreadsheet delivery options).",
     "error"
   );
   return false;
@@ -274,8 +331,9 @@ function renderAccountStrip(profile, signedIn) {
   if (signedIn && profile) {
     accountName.textContent = profile.name || "Google account";
     accountEmail.textContent = profile.email || "Signed in";
-    if (accountSignInBtn) {
-      accountSignInBtn.classList.add("hidden");
+    if (accountAuthBtn) {
+      accountAuthBtn.textContent = "Sign out";
+      accountAuthBtn.dataset.mode = "signout";
     }
     if (accountAvatar) {
       if (profile.picture) {
@@ -291,8 +349,9 @@ function renderAccountStrip(profile, signedIn) {
   } else {
     accountName.textContent = "Google Sheets";
     accountEmail.textContent = "Not signed in";
-    if (accountSignInBtn) {
-      accountSignInBtn.classList.remove("hidden");
+    if (accountAuthBtn) {
+      accountAuthBtn.textContent = "Sign in";
+      accountAuthBtn.dataset.mode = "signin";
     }
     if (accountAvatar) {
       accountAvatar.textContent = "G";
@@ -302,10 +361,8 @@ function renderAccountStrip(profile, signedIn) {
 
 async function refreshAccountStrip() {
   try {
-    const response = await chrome.runtime.sendMessage({ type: "GOOGLE_AUTH_STATUS" });
-    if (response?.success) {
-      renderAccountStrip(response.profile, response.signedIn);
-    }
+    const status = await getAuthStatus();
+    renderAccountStrip(status.profile, status.signedIn);
   } catch {
     renderAccountStrip(null, false);
   }
@@ -608,14 +665,6 @@ function waitForScanResult(tabId) {
   });
 }
 
-function isGoogleSheetsUrl(url) {
-  return (
-    typeof url === "string" &&
-    url.includes("docs.google.com") &&
-    url.includes("/spreadsheets/")
-  );
-}
-
 function applyColumnMapToScanData(data) {
   const columnConfig = parseColumnConfig(columnConfigInput.value.trim());
   if (!columnConfig.length || !data?.headers?.length) return data;
@@ -724,6 +773,12 @@ scanBtn.addEventListener("click", async () => {
     let scanResult = null;
 
     if (isGoogleSheetsUrl(tab.url)) {
+      const auth = await getAuthStatus();
+      if (!auth.signedIn) {
+        showStatus("Sign in with Google to read this spreadsheet.", "error");
+        return;
+      }
+
       scanBtn.textContent = "Reading sheet…";
       showStatus("Reading the current Google Sheet…", "info");
       const apiResponse = await chrome.runtime.sendMessage({
@@ -734,12 +789,8 @@ scanBtn.addEventListener("click", async () => {
       if (apiResponse?.success && apiResponse.data) {
         scanResult = { success: true, data: apiResponse.data };
       } else {
-        showStatus(
-          `${apiResponse?.error || "Sheets API scan failed."} Trying page scan…`,
-          "info"
-        );
-        scanBtn.textContent = "Scanning page…";
-        scanResult = await waitForScanResult(tab.id);
+        showStatus(apiResponse?.error || "Sheets API scan failed.", "error");
+        return;
       }
     } else {
       scanResult = await waitForScanResult(tab.id);
@@ -1039,7 +1090,7 @@ validateBtn.addEventListener("click", async () => {
           createdSpreadsheetUrl =
             createResponse.spreadsheetUrl ||
             (createResponse.spreadsheetId
-              ? `https://docs.google.com/spreadsheets/d/${createResponse.spreadsheetId}`
+              ? spreadsheetDocUrl(createResponse.spreadsheetId)
               : "");
           newSpreadsheetDetail = `created spreadsheet (${createResponse.updatedRows} rows)`;
         }
@@ -1068,7 +1119,7 @@ validateBtn.addEventListener("click", async () => {
           blankSheetUrl =
             blankResponse.spreadsheetUrl ||
             (blankResponse.spreadsheetId
-              ? `https://docs.google.com/spreadsheets/d/${blankResponse.spreadsheetId}`
+              ? spreadsheetDocUrl(blankResponse.spreadsheetId)
               : "");
           blankSheetDetail = `created sheet “${blankResponse.worksheetName}” (${blankResponse.updatedRows} rows)`;
         }
@@ -1184,29 +1235,43 @@ themeToggle?.addEventListener("click", () => {
   saveSettings();
 });
 
-openSettingsBtn?.addEventListener("click", () => {
-  chrome.runtime.openOptionsPage();
-});
+accountAuthBtn?.addEventListener("click", async () => {
+  const mode = accountAuthBtn.dataset.mode || "signin";
+  accountAuthBtn.disabled = true;
 
-accountSignInBtn?.addEventListener("click", async () => {
-  hideStatus();
-  accountSignInBtn.disabled = true;
-  accountSignInBtn.textContent = "…";
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "GOOGLE_SIGN_IN" });
-    if (!response?.success) {
-      showStatus(response?.error || "Sign-in failed.", "error");
-      return;
+  if (mode === "signin") {
+    accountAuthBtn.textContent = "Signing in…";
+    try {
+      const profile = await requestGoogleSignIn();
+      renderAccountStrip(profile, true);
+      showStatus(
+        `Signed in as ${profile?.email || "Google account"}.`,
+        "success"
+      );
+    } catch (err) {
+      renderAccountStrip(null, false);
+      showStatus(err.message || "Sign-in failed.", "error");
+    } finally {
+      accountAuthBtn.disabled = false;
+      if (accountAuthBtn.dataset.mode === "signin") {
+        accountAuthBtn.textContent = "Sign in";
+      }
     }
-    renderAccountStrip(response.profile, true);
-    showStatus(`Signed in as ${response.profile?.email || "Google account"}.`, "success");
+    return;
+  }
+
+  try {
+    await signOut();
+    renderAccountStrip(null, false);
+    showStatus("Signed out.", "info");
   } catch (err) {
-    showStatus(err.message || "Sign-in failed.", "error");
+    showStatus(err.message || "Sign-out failed.", "error");
   } finally {
-    accountSignInBtn.disabled = false;
-    accountSignInBtn.textContent = "Sign in";
+    accountAuthBtn.disabled = false;
   }
 });
 
-loadSettings();
+loadSettings()
+  .then(() => refreshSheetsDeliveryVisibility())
+  .catch(() => refreshSheetsDeliveryVisibility());
 refreshAccountStrip();

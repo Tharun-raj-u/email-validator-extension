@@ -318,3 +318,57 @@ body {
   border-color: var(--toast-info-border);
   color: var(--toast-info-text);
 }
+
+.setup-box {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setup-title {
+  font-size: 0.9rem;
+}
+
+.setup-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-list code {
+  font-size: 0.8rem;
+}
+
+.id-row {
+  display: grid;
+  grid-template-columns: 100px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.id-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.75rem;
+}
+
+.btn-tiny {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border-radius: 6px;
+}

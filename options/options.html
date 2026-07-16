@@ -13,7 +13,7 @@
         <img src="../icons/icon48.png" alt="" width="48" height="48" />
         <div>
           <h1>MailMiner Settings</h1>
-          <p>Google account for reading and updating Sheets</p>
+          <p>Appearance</p>
         </div>
       </div>
       <button
@@ -34,25 +34,12 @@
     </header>
 
     <section class="panel">
-      <div class="panel-head"><span>Google account</span></div>
+      <div class="panel-head"><span>Theme</span></div>
       <p class="muted intro">
-        Sign in so MailMiner can read the Google Sheet open in your browser and write a
-        <strong>Valid</strong> column after validation.
+        Use the sun/moon button above to switch light and dark mode.
+        Sign in / Sign out live in the MailMiner popup (toolbar icon).
       </p>
-      <div id="accountCard" class="account-card signed-out">
-        <div id="accountAvatar" class="avatar" aria-hidden="true">G</div>
-        <div class="account-text">
-          <strong id="accountName">Not signed in</strong>
-          <span id="accountEmail" class="muted">Sign in to scan Google Sheets</span>
-        </div>
-      </div>
-      <div class="row-actions">
-        <button id="signInBtn" class="btn btn-primary" type="button">Sign in with Google</button>
-        <button id="signOutBtn" class="btn btn-ghost hidden" type="button">Sign out</button>
-      </div>
     </section>
-
-    <p id="statusMsg" class="toast hidden"></p>
   </div>
   <script type="module" src="options.js"></script>
 </body>
